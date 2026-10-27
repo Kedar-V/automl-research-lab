@@ -5,7 +5,7 @@ import { ActivityLog } from '../components/ActivityLog'
 import { BestVsPrevious } from '../components/BestVsPrevious'
 import { BudgetPanel } from '../components/BudgetPanel'
 import { ExperimentTimeline } from '../components/ExperimentTimeline'
-import { GraphPlaceholder } from '../components/GraphPlaceholder'
+import { LiveAgentGraph } from '../components/LiveAgentGraph'
 import { MockBanner } from '../components/MockBanner'
 import { ScoreChart } from '../components/ScoreChart'
 import { ServiceHealthStrip } from '../components/ServiceHealthStrip'
@@ -91,7 +91,7 @@ export function ControlCenterPage() {
 
       <div className="mx-auto grid w-full max-w-[1400px] flex-1 gap-6 px-4 py-6 lg:grid-cols-[1.1fr_0.9fr]">
         <div className="flex min-h-0 flex-col gap-6">
-          <GraphPlaceholder />
+          <LiveAgentGraph state={state} />
           <ExperimentTimeline experiments={state.experiments} />
         </div>
         <div className="flex min-h-0 flex-col gap-6">
@@ -107,7 +107,7 @@ export function ControlCenterPage() {
           New session
         </Link>
         {' · '}
-        Stage B1 Control Center · live agent graph planned for B2
+        Stage B2 · live agent graph driven by SSE
       </footer>
     </div>
   )

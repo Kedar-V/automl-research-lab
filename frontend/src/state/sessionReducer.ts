@@ -1,5 +1,8 @@
+import { resolveNodeId } from '../graph/mapEventToNode'
+import { NODE_BY_ID } from '../graph/agentGraphConfig'
 import type {
   ActivityItem,
+  AgentNodeRuntime,
   EventEnvelope,
   ExperimentEntry,
   SessionState,
@@ -24,6 +27,10 @@ export const initialSessionState = (overrides?: Partial<SessionState>): SessionS
   activity: [],
   lastEventType: null,
   error: null,
+  agentNodes: {},
+  activeNodeId: null,
+  mlRetryCount: 0,
+  lastCorrelationId: null,
   ...overrides,
 })
 
@@ -99,6 +106,10 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         bestValScore: null,
         experimentsUsed: 0,
         error: null,
+        agentNodes: {},
+        activeNodeId: null,
+        mlRetryCount: 0,
+        lastCorrelationId: null,
       }
     case 'STATUS':
       return { ...state, status: action.status }
@@ -120,6 +131,79 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
   }
 }
 
+function patchAgentNode(
+  nodes: Record<string, AgentNodeRuntime>,
+  nodeId: string,
+  patch: Partial<AgentNodeRuntime>,
+): Record<string, AgentNodeRuntime> {
+  const prev = nodes[nodeId] ?? { status: 'pending' as const }
+  return { ...nodes, [nodeId]: { ...prev, ...patch } }
+}
+
+function applyGraphFromEvent(state: SessionState, event: EventEnvelope): SessionState {
+  const nodeId = resolveNodeId(event.source_agent, event.payload)
+  if (!nodeId) {
+    return { ...state, lastCorrelationId: event.correlation_id }
+  }
+
+  let status = state.agentNodes[nodeId]?.status ?? 'pending'
+  if (event.type === 'agent_started' || event.type === 'trial_started' || event.type === 'tool_called') {
+    status = 'running'
+  } else if (event.type === 'trial_failed' || event.type === 'service_error') {
+    status = 'failed'
+  } else if (event.type === 'agent_completed' && event.payload.status === 'failed') {
+    status = 'failed'
+  } else if (
+    event.type === 'agent_completed' ||
+    event.type === 'trial_completed' ||
+    event.type === 'tool_result' ||
+    event.type === 'verdict_issued'
+  ) {
+    status = 'completed'
+  }
+
+  let agentNodes = patchAgentNode(state.agentNodes, nodeId, {
+    status,
+    lastEventType: event.type,
+    lastPayload: event.payload,
+    correlationId: event.correlation_id,
+    sourceService: event.source_service,
+    updatedAt: event.timestamp,
+  })
+
+  // Bubble status to parent lead when a subagent runs/completes/fails.
+  const def = NODE_BY_ID[nodeId]
+  if (def?.leadId) {
+    const leadStatus =
+      status === 'running' ? 'running' : status === 'failed' ? 'failed' : agentNodes[def.leadId]?.status
+    if (status === 'running') {
+      agentNodes = patchAgentNode(agentNodes, def.leadId, {
+        status: 'running',
+        updatedAt: event.timestamp,
+        correlationId: event.correlation_id,
+      })
+    } else if (status === 'failed') {
+      agentNodes = patchAgentNode(agentNodes, def.leadId, {
+        status: 'failed',
+        updatedAt: event.timestamp,
+      })
+    } else if (status === 'completed' && leadStatus === 'running') {
+      // Keep lead running until its own completed event; no-op here.
+    }
+  }
+
+  const retry =
+    typeof event.payload.retry_count === 'number' ? event.payload.retry_count : state.mlRetryCount
+
+  return {
+    ...state,
+    agentNodes,
+    activeNodeId: status === 'running' ? nodeId : state.activeNodeId === nodeId ? nodeId : state.activeNodeId,
+    mlRetryCount: nodeId === 'ml_engineer' || nodeId === 'error_repair' || def?.leadId === 'ml_engineer' ? retry : state.mlRetryCount,
+    lastCorrelationId: event.correlation_id,
+  }
+}
+
 function reduceEvent(state: SessionState, event: EventEnvelope): SessionState {
   const mock = state.mock || event.mock
   let next: SessionState = {
@@ -127,6 +211,8 @@ function reduceEvent(state: SessionState, event: EventEnvelope): SessionState {
     mock,
     lastEventType: event.type,
   }
+
+  next = applyGraphFromEvent(next, event)
 
   const p = event.payload
 

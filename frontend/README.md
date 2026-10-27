@@ -4,11 +4,11 @@ React + TypeScript + Vite + Tailwind + Recharts.
 
 The browser talks to the **gateway only** via the Vite proxy (`/api` → `http://127.0.0.1:8000`).
 
-## Stage B1
+## Stage B2
 
 - Setup screen
 - Research Control Center (timeline, score chart, best vs previous, budget, activity log, health strip, mock banner)
-- Live agent graph is **planned** (Stage B2)
+- Live React Flow agent graph (leads + subagents, SSE status, planned amber parallel nodes, side panel)
 
 ```bash
 # Terminal 1 — gateway / stack

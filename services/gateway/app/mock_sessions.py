@@ -30,7 +30,8 @@ class MockSession:
     history: list[EventEnvelope] = field(default_factory=list)
     _resume: asyncio.Event = field(default_factory=asyncio.Event)
     _cancel: asyncio.Event = field(default_factory=asyncio.Event)
-    _live_stream_active: bool = False
+    _producer_task: asyncio.Task | None = None
+    _subscribers: list[asyncio.Queue[EventEnvelope | None]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self._resume.set()
@@ -73,6 +74,8 @@ class MockSessionStore:
         session._cancel.set()
         session._resume.set()
         session.status = SessionStatus.RESET
+        for q in list(session._subscribers):
+            await q.put(None)
         return session
 
     def _require(self, session_id: str) -> MockSession:
@@ -98,20 +101,8 @@ def build_event(session: MockSession, step: dict[str, Any]) -> EventEnvelope:
     )
 
 
-async def replay_scenario(session: MockSession) -> AsyncIterator[EventEnvelope]:
-    """Timed fixture replay. Completed sessions re-send history for reconnects."""
-    if session.status == SessionStatus.COMPLETED and session.history:
-        for event in session.history:
-            yield event
-        return
-
-    if session._live_stream_active:
-        # Another client already owns the live replay; send history so far only.
-        for event in list(session.history):
-            yield event
-        return
-
-    session._live_stream_active = True
+async def _produce(session: MockSession) -> None:
+    """One producer fans out to all SSE subscribers (supports late UI joins)."""
     try:
         steps = load_scenario(session.scenario)
         for step in steps:
@@ -128,11 +119,38 @@ async def replay_scenario(session: MockSession) -> AsyncIterator[EventEnvelope]:
                 break
             event = build_event(session, step)
             session.history.append(event)
-            yield event
+            for q in list(session._subscribers):
+                await q.put(event)
             if event.payload.get("done") is True:
                 session.status = SessionStatus.COMPLETED
-                return
+                break
         if session.status == SessionStatus.RUNNING:
             session.status = SessionStatus.COMPLETED
     finally:
-        session._live_stream_active = False
+        for q in list(session._subscribers):
+            await q.put(None)
+
+
+async def replay_scenario(session: MockSession) -> AsyncIterator[EventEnvelope]:
+    queue: asyncio.Queue[EventEnvelope | None] = asyncio.Queue()
+
+    # Catch up on history already produced, then listen for new events.
+    for event in list(session.history):
+        yield event
+
+    if session.status in {SessionStatus.COMPLETED, SessionStatus.RESET}:
+        return
+
+    session._subscribers.append(queue)
+    if session._producer_task is None or session._producer_task.done():
+        session._producer_task = asyncio.create_task(_produce(session))
+
+    try:
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            yield item
+    finally:
+        if queue in session._subscribers:
+            session._subscribers.remove(queue)

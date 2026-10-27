@@ -15,9 +15,9 @@ Architecture stub: [`architecture.md`](architecture.md)
 | --- | --- | --- |
 | A0 Contracts + skeletons | **Done** | `contracts/`, 7 FastAPI `/healthz` services, compose, contract tests, GitHub |
 | A1 Mock backend SSE | **Done** | Gateway mock mode, 6 fixture scenarios, `make demo-sse` |
-| B1 Setup + Control Center | **Done** | Light-mode React UI, SSE reducer, mock banner; graph is placeholder |
-| B2 Live React Flow agent graph | **Next** | Expandable leads, 12 subagents, status from SSE |
-| B3 Static diagrams + demo script | Pending | Architecture / orchestration / recovery diagrams, `DEMO_SCRIPT.md` |
+| B1 Setup + Control Center | **Done** | Light-mode React UI, SSE reducer, mock banner |
+| B2 Live React Flow agent graph | **Done** | Expandable leads, 12 subagents, status from SSE, planned amber nodes |
+| B3 Static diagrams + demo script | **Next** | Architecture / orchestration / recovery diagrams, `DEMO_SCRIPT.md` |
 | C1 dataset-service | Pending | Real upload, fixed split, sealed holdout |
 | C2 harness-service | Pending | Seven tools + `policy.py` |
 | C3 tracking-service | Pending | MLflow + optional W&B SDK mirror |

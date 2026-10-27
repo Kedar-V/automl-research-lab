@@ -1,4 +1,6 @@
 @import "tailwindcss";
+/* React Flow styles after Tailwind (required for TW v4 ordering). */
+@import "@xyflow/react/dist/style.css";
 
 @theme {
   --font-display: "Fraunces", ui-serif, Georgia, serif;

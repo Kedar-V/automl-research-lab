@@ -63,6 +63,17 @@ export interface ActivityItem {
   type: EventType
 }
 
+export type AgentNodeStatus = 'pending' | 'running' | 'completed' | 'failed'
+
+export interface AgentNodeRuntime {
+  status: AgentNodeStatus
+  lastEventType?: string
+  lastPayload?: Record<string, unknown>
+  correlationId?: string
+  sourceService?: string
+  updatedAt?: string
+}
+
 export interface SessionState {
   sessionId: string | null
   status: SessionRunStatus
@@ -82,6 +93,11 @@ export interface SessionState {
   activity: ActivityItem[]
   lastEventType: EventType | null
   error: string | null
+  /** Live agent graph — only updated from SSE */
+  agentNodes: Record<string, AgentNodeRuntime>
+  activeNodeId: string | null
+  mlRetryCount: number
+  lastCorrelationId: string | null
 }
 
 export const SCENARIOS = [

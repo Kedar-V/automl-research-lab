@@ -2,7 +2,7 @@
 
 A teaching demo for master's data-science students: multi-agent AutoML with LangGraph, a sealed holdout, and microservices that talk only over HTTP and Redis Streams.
 
-**Current stage: B1 — UI on the mock.** Setup + Research Control Center read the mock SSE stream. Live agent graph is planned for B2. Numbers are illustrative (`mock: true` banner). Real experiments start in Phase C.
+**Current stage: B2 — live agent graph.** Setup + Control Center + React Flow graph driven by mock SSE (`mock: true` banner). Static architecture diagrams arrive in B3. Real experiments start in Phase C.
 
 Design canvas: [`AutoML_Research_Lab_demo_canvas.pdf`](AutoML_Research_Lab_demo_canvas.pdf)
 
@@ -65,9 +65,9 @@ Full checklist and remaining-stage specs: **[`docs/BUILD_PLAN.md`](docs/BUILD_PL
 | --- | --- |
 | A0 contracts + skeletons | Done |
 | A1 mock SSE backend | Done |
-| B1 Setup + Control Center | Done (current UI) |
-| **B2 live React Flow agent graph** | **Next** |
-| B3 static diagrams + `DEMO_SCRIPT.md` | Pending |
+| B1 Setup + Control Center | Done |
+| B2 live React Flow agent graph | Done (current UI) |
+| **B3 static diagrams + `DEMO_SCRIPT.md`** | **Next** |
 | C1–C7 real services one-by-one | Pending |
 | D1 demo polish | Pending |
 
