@@ -59,14 +59,19 @@ Pause / resume / reset: `POST /sessions/{id}/pause|resume|reset`.
 
 ## Build plan (stop after each stage)
 
-- **A0**: contracts, skeletons, `/healthz`, contract tests, GitHub repo
-- **A1**: mock backend SSE fixture scenarios
-- **B1** (this): Setup + Control Center UI on the mock stream
-- **B2–B3**: React Flow agent graph + static architecture diagrams
-- **C1–C7**: replace each mock with a real service
-- **D1**: replay mode, failure demo, evaluation script
+Full checklist and remaining-stage specs: **[`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md)** (source of truth).
 
-See [`docs/architecture.md`](docs/architecture.md) and [`docs/planned-features.md`](docs/planned-features.md).
+| Stage | Status |
+| --- | --- |
+| A0 contracts + skeletons | Done |
+| A1 mock SSE backend | Done |
+| B1 Setup + Control Center | Done (current UI) |
+| **B2 live React Flow agent graph** | **Next** |
+| B3 static diagrams + `DEMO_SCRIPT.md` | Pending |
+| C1–C7 real services one-by-one | Pending |
+| D1 demo polish | Pending |
+
+Also: [`docs/architecture.md`](docs/architecture.md) · [`docs/services.md`](docs/services.md) · [`docs/planned-features.md`](docs/planned-features.md)
 
 ## Hard rules (never break)
 

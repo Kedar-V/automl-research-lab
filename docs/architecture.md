@@ -18,3 +18,5 @@ Seven application services plus Redis, MLflow, an artifact volume, and optional 
 **Holdout:** only `POST /internal/holdout/evaluate` on `dataset-service`, once per session, harness token only. No route returns holdout rows.
 
 Visual reference: root PDF design canvas.
+
+Stage-by-stage build status and remaining work: [`BUILD_PLAN.md`](BUILD_PLAN.md).
