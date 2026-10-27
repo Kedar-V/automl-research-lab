@@ -1,0 +1,199 @@
+# AutoML Research Lab — Stage A0 skeletons + infra stubs.
+# wandb-mcp is behind profile "wandb" so `make up` works without WANDB_API_KEY.
+
+name: automl-research-lab
+
+services:
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [automl]
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.17.2
+    command: >
+      mlflow server
+      --host 0.0.0.0
+      --port 5000
+      --backend-store-uri sqlite:///mlflow.db
+      --default-artifact-root /mlflow/artifacts
+    volumes:
+      - mlflow_data:/mlflow
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    ports:
+      # Host 5050 — macOS often binds 5000 (AirPlay Receiver).
+      - "5050:5000"
+    networks: [automl]
+
+  wandb-mcp:
+    profiles: ["wandb"]
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+    environment:
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+    command: >
+      uvx wandb-mcp-server --transport http --port 8080
+    # Internal only — never publish to host.
+    expose:
+      - "8080"
+    networks: [automl]
+
+  gateway:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.service
+      args:
+        SERVICE_DIR: gateway
+        PORT: "8000"
+    environment:
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+      MOCK_GATEWAY: ${MOCK_GATEWAY:-true}
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks: [automl]
+
+  orchestrator:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.service
+      args:
+        SERVICE_DIR: orchestrator
+        PORT: "8001"
+    environment:
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+      MOCK_ORCHESTRATOR: ${MOCK_ORCHESTRATOR:-true}
+    ports:
+      # Host 8011 — 8001 often taken locally (e.g. other demos).
+      - "8011:8001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks: [automl]
+
+  agent_service:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.service
+      args:
+        SERVICE_DIR: agent_service
+        PORT: "8002"
+    environment:
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+      MOCK_AGENT_SERVICE: ${MOCK_AGENT_SERVICE:-true}
+    ports:
+      - "8002:8002"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks: [automl]
+
+  harness:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.service
+      args:
+        SERVICE_DIR: harness
+        PORT: "8003"
+    environment:
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+      MOCK_HARNESS: ${MOCK_HARNESS:-true}
+    ports:
+      - "8003:8003"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks: [automl]
+
+  dataset_service:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.service
+      args:
+        SERVICE_DIR: dataset_service
+        PORT: "8004"
+    environment:
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+      MOCK_DATASET_SERVICE: ${MOCK_DATASET_SERVICE:-true}
+    ports:
+      - "8004:8004"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8004/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks: [automl]
+
+  memory_service:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.service
+      args:
+        SERVICE_DIR: memory_service
+        PORT: "8005"
+    environment:
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+      MOCK_MEMORY_SERVICE: ${MOCK_MEMORY_SERVICE:-true}
+    ports:
+      - "8005:8005"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8005/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks: [automl]
+
+  tracking_service:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.service
+      args:
+        SERVICE_DIR: tracking_service
+        PORT: "8006"
+    environment:
+      SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
+      MOCK_TRACKING_SERVICE: ${MOCK_TRACKING_SERVICE:-true}
+      WANDB_ENABLED: ${WANDB_ENABLED:-false}
+    ports:
+      - "8006:8006"
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8006/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks: [automl]
+
+networks:
+  automl:
+    driver: bridge
+
+volumes:
+  mlflow_data:
