@@ -2,7 +2,7 @@
 
 A teaching demo for master's data-science students: multi-agent AutoML with LangGraph, a sealed holdout, and microservices that talk only over HTTP and Redis Streams.
 
-**Current stage: A1 — mock backend.** The gateway creates sessions and streams labeled sample fixture events over SSE (`mock: true`). Numbers are illustrative, not from trained models. Real experiments start in Phase C.
+**Current stage: B1 — UI on the mock.** Setup + Research Control Center read the mock SSE stream. Live agent graph is planned for B2. Numbers are illustrative (`mock: true` banner). Real experiments start in Phase C.
 
 Design canvas: [`AutoML_Research_Lab_demo_canvas.pdf`](AutoML_Research_Lab_demo_canvas.pdf)
 
@@ -15,8 +15,10 @@ make up               # docker compose build + start
 make health           # curl each /healthz
 make test             # contract + mock SSE tests
 make demo-sse         # stream happy-path fixture (or SCENARIO=revise_loop)
-make logs
-make down
+
+# UI (Stage B1) — separate terminal
+cd frontend && npm install && npm run dev
+# open http://127.0.0.1:5173
 ```
 
 ### Mock SSE scenarios
@@ -58,8 +60,9 @@ Pause / resume / reset: `POST /sessions/{id}/pause|resume|reset`.
 ## Build plan (stop after each stage)
 
 - **A0**: contracts, skeletons, `/healthz`, contract tests, GitHub repo
-- **A1** (this): mock backend SSE fixture scenarios
-- **B1–B3**: React UI on the mock
+- **A1**: mock backend SSE fixture scenarios
+- **B1** (this): Setup + Control Center UI on the mock stream
+- **B2–B3**: React Flow agent graph + static architecture diagrams
 - **C1–C7**: replace each mock with a real service
 - **D1**: replay mode, failure demo, evaluation script
 

@@ -3,7 +3,10 @@ VENV := .venv
 PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 
-.PHONY: up down logs test install health venv demo-sse rebuild-gateway
+.PHONY: up down logs test install health venv demo-sse rebuild-gateway frontend
+
+frontend:
+	cd frontend && npm run dev
 
 venv:
 	python3 -m venv $(VENV)
