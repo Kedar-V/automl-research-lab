@@ -186,7 +186,7 @@ export function SetupPage() {
           <button
             type="submit"
             disabled={busy}
-            className="w-full bg-teal px-4 py-3 text-center text-base font-medium text-ink hover:bg-teal/90 disabled:opacity-60"
+            className="w-full bg-teal px-4 py-3 text-center text-base font-medium text-white hover:bg-teal-dim disabled:opacity-60"
           >
             {busy ? 'Starting…' : 'Start research session'}
           </button>

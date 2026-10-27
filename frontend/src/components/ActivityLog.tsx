@@ -11,7 +11,7 @@ export function ActivityLog({ items }: { items: ActivityItem[] }) {
           Streaming over SSE
         </p>
       </div>
-      <div className="min-h-48 flex-1 overflow-auto border border-line bg-ink/50 font-mono text-xs">
+      <div className="min-h-48 flex-1 overflow-auto border border-line bg-panel font-mono text-xs">
         {newestFirst.length === 0 ? (
           <p className="p-4 text-mist">No events yet</p>
         ) : (

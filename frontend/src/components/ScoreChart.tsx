@@ -39,29 +39,30 @@ export function ScoreChart({
         ) : (
           <ResponsiveContainer width="100%" height="100%">
             <LineChart data={data} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
-              <CartesianGrid stroke="rgba(154,175,165,0.15)" strokeDasharray="3 3" />
-              <XAxis dataKey="index" stroke="#9aafa5" fontSize={11} />
-              <YAxis domain={[0, 1]} stroke="#9aafa5" fontSize={11} width={32} />
+              <CartesianGrid stroke="rgba(90,114,103,0.2)" strokeDasharray="3 3" />
+              <XAxis dataKey="index" stroke="#5a7267" fontSize={11} />
+              <YAxis domain={[0, 1]} stroke="#5a7267" fontSize={11} width={32} />
               <Tooltip
                 contentStyle={{
-                  background: '#1a2420',
-                  border: '1px solid #2a3a34',
+                  background: '#ffffff',
+                  border: '1px solid #c8d5ce',
                   borderRadius: 0,
                   fontSize: 12,
+                  color: '#14241e',
                 }}
               />
               <ReferenceLine
                 y={targetScore}
-                stroke="#e8b84a"
+                stroke="#9a6b12"
                 strokeDasharray="4 4"
-                label={{ value: `Target ${targetScore.toFixed(2)}`, fill: '#e8b84a', fontSize: 11 }}
+                label={{ value: `Target ${targetScore.toFixed(2)}`, fill: '#9a6b12', fontSize: 11 }}
               />
               <Line
                 type="monotone"
                 dataKey="f1"
-                stroke="#2dd4a8"
+                stroke="#0d8f6e"
                 strokeWidth={2}
-                dot={{ r: 4, fill: '#2dd4a8' }}
+                dot={{ r: 4, fill: '#0d8f6e' }}
                 isAnimationActive={false}
               />
             </LineChart>
