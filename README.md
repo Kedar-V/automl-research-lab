@@ -2,21 +2,43 @@
 
 A teaching demo for master's data-science students: multi-agent AutoML with LangGraph, a sealed holdout, and microservices that talk only over HTTP and Redis Streams.
 
-**Current stage: A0 — contracts and service skeletons.** Placeholder routes return `501`. No real experiments yet. Mock event streaming arrives in Stage A1.
+**Current stage: A1 — mock backend.** The gateway creates sessions and streams labeled sample fixture events over SSE (`mock: true`). Numbers are illustrative, not from trained models. Real experiments start in Phase C.
 
 Design canvas: [`AutoML_Research_Lab_demo_canvas.pdf`](AutoML_Research_Lab_demo_canvas.pdf)
 
-## Quick start (Stage A0)
+## Quick start
 
 ```bash
 cp .env.example .env
 make install          # creates .venv and installs contracts + pytest
 make up               # docker compose build + start
 make health           # curl each /healthz
-make test             # contract tests (uses .venv; Docker not required)
-make logs             # follow compose logs
+make test             # contract + mock SSE tests
+make demo-sse         # stream happy-path fixture (or SCENARIO=revise_loop)
+make logs
 make down
 ```
+
+### Mock SSE scenarios
+
+| Scenario | What you see |
+| --- | --- |
+| `happy` | Profile → experiment → accept → holdout → stop |
+| `revise_loop` | Judge revises once, loop-back to Hypothesis Generator |
+| `repair` | Invalid config → one Error repair → retry succeeds |
+| `terminal_failure` | Repair exhausted → failed trial → supervisor skips |
+| `budget_stop` | Stops at budget without hitting target score |
+| `service_down` | Harness typed error → bounded retry → terminal failure |
+
+```bash
+# Manual curl
+SID=$(curl -sf -X POST http://127.0.0.1:8000/sessions \
+  -H 'Content-Type: application/json' \
+  -d '{"target_column":"churned","scenario":"revise_loop"}' | jq -r .session_id)
+curl -N "http://127.0.0.1:8000/sessions/$SID/events"
+```
+
+Pause / resume / reset: `POST /sessions/{id}/pause|resume|reset`.
 
 ### Local ports
 
@@ -35,8 +57,8 @@ make down
 
 ## Build plan (stop after each stage)
 
-- **A0** (this): contracts, skeletons, `/healthz`, contract tests, GitHub repo
-- **A1**: mock backend SSE fixture scenarios
+- **A0**: contracts, skeletons, `/healthz`, contract tests, GitHub repo
+- **A1** (this): mock backend SSE fixture scenarios
 - **B1–B3**: React UI on the mock
 - **C1–C7**: replace each mock with a real service
 - **D1**: replay mode, failure demo, evaluation script

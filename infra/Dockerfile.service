@@ -7,14 +7,15 @@ ARG PORT=8000
 
 WORKDIR /app
 
-# Shared contracts + correlation middleware
+# Shared contracts, mock fixtures, correlation middleware
 COPY contracts /app/contracts
+COPY mocks /app/mocks
 COPY pyproject.toml /app/pyproject.toml
+COPY services/__init__.py /app/services/__init__.py
 COPY services/_shared /app/services/_shared
-COPY services/${SERVICE_DIR}/requirements.txt /app/requirements.txt
-COPY services/${SERVICE_DIR}/app /app/services/${SERVICE_DIR}/app
+COPY services/${SERVICE_DIR} /app/services/${SERVICE_DIR}
 
-RUN pip install --no-cache-dir -r /app/requirements.txt \
+RUN pip install --no-cache-dir -r /app/services/${SERVICE_DIR}/requirements.txt \
     && pip install --no-cache-dir /app
 
 ENV PYTHONPATH=/app:/app/services
