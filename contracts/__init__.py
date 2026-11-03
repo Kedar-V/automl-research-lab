@@ -13,6 +13,13 @@ from contracts.errors import ServiceError
 from contracts.events import EventEnvelope, EventType
 from contracts.health import HealthResponse
 from contracts.ids import CorrelationId, SessionId
+from contracts.projects import (
+    CreateProjectRequest,
+    PriorDataset,
+    ProjectDetail,
+    ProjectSummary,
+    TrainingSessionRecord,
+)
 from contracts.sessions import (
     CreateSessionRequest,
     CreateSessionResponse,
@@ -41,6 +48,7 @@ __all__ = [
     "CompareExperimentsRequest",
     "CompareExperimentsResponse",
     "CorrelationId",
+    "CreateProjectRequest",
     "CreateSessionRequest",
     "CreateSessionResponse",
     "DataProfile",
@@ -56,6 +64,9 @@ __all__ = [
     "InspectDataRequest",
     "InspectDataResponse",
     "LeadName",
+    "PriorDataset",
+    "ProjectDetail",
+    "ProjectSummary",
     "ResearchState",
     "RunExperimentRequest",
     "RunExperimentResponse",
@@ -65,6 +76,7 @@ __all__ = [
     "SessionCommandResponse",
     "SessionId",
     "SubagentName",
+    "TrainingSessionRecord",
     "ValidateExperimentRequest",
     "ValidateExperimentResponse",
     "Verdict",

@@ -17,15 +17,15 @@ Architecture stub: [`architecture.md`](architecture.md)
 | A1 Mock backend SSE | **Done** | Gateway mock mode, 6 fixture scenarios, `make demo-sse` |
 | B1 Setup + Control Center | **Done** | Light-mode React UI, SSE reducer, mock banner |
 | B2 Live React Flow agent graph | **Done** | Expandable leads, 12 subagents, status from SSE, planned amber nodes |
-| B3 Static diagrams + demo script | **Next** | Architecture / orchestration / recovery diagrams, `DEMO_SCRIPT.md` |
-| C1 dataset-service | Pending | Real upload, fixed split, sealed holdout |
-| C2 harness-service | Pending | Seven tools + `policy.py` |
-| C3 tracking-service | Pending | MLflow + optional W&B SDK mirror |
-| C4 memory-service | Pending | Four stores, single-writer |
-| C5 agent-service | Pending | LLM subagents + read-only W&B MCP allow-list |
-| C6 orchestrator | Pending | LangGraph + meta-supervisor + checkpointer |
-| C7 gateway | Pending | Real Redis Streams SSE; mock off; banner gone |
-| D1 Demo polish | Pending | Replay, failure demo, evaluation script, README |
+| B3 Static diagrams + demo script | **Done** | Architecture / orchestration / recovery diagrams, `DEMO_SCRIPT.md` |
+| C1 dataset-service | **Done** | Real upload, fixed split, sealed holdout |
+| C2 harness-service | **Done** | Seven tools + `policy.py` + sklearn backends |
+| C3 tracking-service | **Done** | MLflow + optional W&B SDK mirror (`WANDB_ENABLED`) |
+| C4 memory-service | **Done** | Four stores, single-writer |
+| C5 agent-service | **Done** | Composer 2.5 via Cursor SDK (fallback if key/SDK missing) + W&B MCP soft probe |
+| C6 orchestrator | **Done** | LangGraph meta-supervisor + MemorySaver checkpointer |
+| C7 gateway | **Done** | Live SSE + Redis Streams `XADD`; mock + replay modes |
+| D1 Demo polish | **Done** | Replay banner + recording, eval script, README, DEMO_SCRIPT |
 
 Repo: https://github.com/Kedar-V/automl-research-lab
 
@@ -203,8 +203,4 @@ Repo: https://github.com/Kedar-V/automl-research-lab
 
 ## How to continue in Cursor
 
-1. Open this file and confirm the next **Pending** / **Next** row (currently **B2**).
-2. Prompt: `Implement Stage B2 only from docs/BUILD_PLAN.md. Stop when done and give the 3–5 line run sheet.`
-3. Student runs the stage, then repeat for B3 → C1 → … → D1.
-
-Do not implement multiple stages in one pass unless explicitly asked.
+All first-pass stages (A0–D1) are complete. Remaining items live in [`planned-features.md`](planned-features.md) (parallel branches, human edit checkpoints, vector lessons, mTLS).

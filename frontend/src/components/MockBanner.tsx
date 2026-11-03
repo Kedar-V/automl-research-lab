@@ -11,3 +11,16 @@ export function MockBanner({ visible }: { visible: boolean }) {
     </div>
   )
 }
+
+/** Replay of a recorded real run — never labeled “live” or “mock”. */
+export function ReplayBanner({ visible }: { visible: boolean }) {
+  if (!visible) return null
+  return (
+    <div
+      role="status"
+      className="border-b border-teal/30 bg-teal/10 px-4 py-2 text-center text-sm font-medium tracking-wide text-teal"
+    >
+      Replay of a recorded real run — not a live session
+    </div>
+  )
+}

@@ -39,3 +39,7 @@ artifacts/
 
 # Docker
 .docker/
+
+# Simple-loop runtime memory
+mini_loop/memory/
+mini_loop/**/__pycache__/

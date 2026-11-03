@@ -1,8 +1,24 @@
-import type { ExperimentEntry } from '../types/events'
+import { useMemo, useState } from 'react'
+import {
+  buildLeadTraces,
+  eventsForExperiment,
+  type LeadTrace,
+  type SubagentTrace,
+} from '../lib/experimentTrace'
+import type { EventEnvelope, ExperimentEntry } from '../types/events'
 
-export function ExperimentTimeline({ experiments }: { experiments: ExperimentEntry[] }) {
+export function ExperimentTimeline({
+  experiments,
+  traceEvents = [],
+}: {
+  experiments: ExperimentEntry[]
+  traceEvents?: EventEnvelope[]
+}) {
   const completed = experiments.filter((e) => e.status === 'completed').length
   const running = experiments.filter((e) => e.status === 'running').length
+  const [openExp, setOpenExp] = useState<string | null>(null)
+  const [openLead, setOpenLead] = useState<string | null>(null)
+  const traces = Array.isArray(traceEvents) ? traceEvents : []
 
   return (
     <section className="min-h-0 flex-1 overflow-auto">
@@ -13,7 +29,8 @@ export function ExperimentTimeline({ experiments }: { experiments: ExperimentEnt
         </p>
       </div>
       <p className="mb-4 text-sm text-mist">
-        Each experiment links to the Judge verdict that motivated it. Metrics arrive only from SSE.
+        Click an experiment to inspect the four leads, then open a lead to see its overall
+        output and every subagent that informed it.
       </p>
 
       {experiments.length === 0 ? (
@@ -22,40 +39,204 @@ export function ExperimentTimeline({ experiments }: { experiments: ExperimentEnt
         </p>
       ) : (
         <ol className="space-y-3">
-          {experiments.map((exp, i) => (
-            <li
-              key={exp.experimentId}
-              className="border-l-2 border-teal/40 bg-panel/60 py-3 pl-4 pr-3"
-            >
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <h3 className="text-sm font-medium text-paper">
-                  <span className="mr-2 font-mono text-mist">{i + 1}</span>
-                  {exp.modelFamily ?? exp.experimentId}
-                </h3>
-                <span className="font-mono text-[11px] uppercase tracking-wide text-mist">
-                  {exp.status}
-                  {typeof exp.durationSeconds === 'number'
-                    ? ` · ${exp.durationSeconds.toFixed(1)} s`
-                    : ''}
-                </span>
-              </div>
-              {exp.note && <p className="mt-1 text-xs text-amber">{exp.note}</p>}
-              <MetricRow metrics={exp.validationMetrics} label="Val" />
-              <MetricRow metrics={exp.trainMetrics} label="Train" />
-              {exp.verdictAction && (
-                <p className="mt-2 text-sm text-paper/90">
-                  <span className="font-mono text-xs text-teal">Judge · {exp.verdictAction}</span>
-                  {exp.observation ? ` — ${exp.observation}` : ''}
-                </p>
-              )}
-              {exp.nextAction && (
-                <p className="mt-1 text-xs text-mist">Next action: {exp.nextAction}</p>
-              )}
-            </li>
-          ))}
+          {experiments.map((exp, i) => {
+            const expanded = openExp === exp.experimentId
+            const leads = expanded
+              ? buildLeadTraces(eventsForExperiment(traces, exp.experimentId, i === 0))
+              : []
+            return (
+              <li
+                key={exp.experimentId}
+                className="border-l-2 border-teal/40 bg-panel/60"
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    setOpenExp(expanded ? null : exp.experimentId)
+                    setOpenLead(null)
+                  }}
+                  className="flex w-full flex-wrap items-baseline justify-between gap-2 px-4 py-3 text-left hover:bg-teal/5"
+                >
+                  <h3 className="text-sm font-medium text-paper">
+                    <span className="mr-2 font-mono text-mist">{i + 1}</span>
+                    {exp.modelFamily ?? exp.experimentId}
+                    <span className="ml-2 font-mono text-[10px] text-teal">
+                      {expanded ? '▾' : '▸'} drill down
+                    </span>
+                  </h3>
+                  <span className="font-mono text-[11px] uppercase tracking-wide text-mist">
+                    {exp.status}
+                    {typeof exp.durationSeconds === 'number'
+                      ? ` · ${exp.durationSeconds.toFixed(1)} s`
+                      : ''}
+                  </span>
+                </button>
+                <div className="px-4 pb-3">
+                  {exp.note && <p className="text-xs text-amber">{exp.note}</p>}
+                  <MetricRow metrics={exp.validationMetrics} label="Val" />
+                  <MetricRow metrics={exp.trainMetrics} label="Train" />
+                  {exp.verdictAction && (
+                    <p className="mt-2 text-sm text-paper/90">
+                      <span className="font-mono text-xs text-teal">Judge · {exp.verdictAction}</span>
+                      {exp.observation ? ` — ${exp.observation}` : ''}
+                    </p>
+                  )}
+                  {exp.nextAction && (
+                    <p className="mt-1 text-xs text-mist">Next action: {exp.nextAction}</p>
+                  )}
+                  <p className="mt-2 font-mono text-[10px] text-mist">
+                    Self-heal{' '}
+                    <span className="text-paper">
+                      {typeof exp.retryCount === 'number' ? exp.retryCount : 0}/3
+                    </span>
+                  </p>
+
+                  {expanded && (
+                    <div className="mt-4 space-y-2 border-t border-line pt-3">
+                      <p className="font-mono text-[10px] uppercase tracking-wider text-mist">
+                        Four leads for {exp.experimentId}
+                      </p>
+                      {leads.map((lead) => (
+                        <LeadPanel
+                          key={lead.id}
+                          lead={lead}
+                          open={openLead === `${exp.experimentId}:${lead.id}`}
+                          onToggle={() =>
+                            setOpenLead((cur) =>
+                              cur === `${exp.experimentId}:${lead.id}`
+                                ? null
+                                : `${exp.experimentId}:${lead.id}`,
+                            )
+                          }
+                        />
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </li>
+            )
+          })}
         </ol>
       )}
     </section>
+  )
+}
+
+function LeadPanel({
+  lead,
+  open,
+  onToggle,
+}: {
+  lead: LeadTrace
+  open: boolean
+  onToggle: () => void
+}) {
+  return (
+    <div className="border border-line bg-ink-2/40">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-teal/5"
+      >
+        <div>
+          <p className="text-sm font-medium text-paper">
+            <span className="mr-2 font-mono text-[10px] text-teal">{open ? '▾' : '▸'}</span>
+            {lead.title}
+          </p>
+          <p className="text-xs text-mist">{lead.role}</p>
+        </div>
+        <StatusPill status={lead.status} />
+      </button>
+      {open && (
+        <div className="space-y-3 border-t border-line px-3 py-3">
+          <p className="text-xs text-mist">{lead.responsibility}</p>
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-wider text-teal">
+              Lead overall output
+            </p>
+            <JsonBlock value={lead.overall} />
+          </div>
+          <div>
+            <p className="mb-2 font-mono text-[10px] uppercase tracking-wider text-teal">
+              Subagents that informed this lead
+            </p>
+            <ul className="space-y-2">
+              {lead.subagents.map((sub) => (
+                <SubagentCard key={sub.id} sub={sub} />
+              ))}
+            </ul>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function SubagentCard({ sub }: { sub: SubagentTrace }) {
+  const [open, setOpen] = useState(false)
+  const body = sub.output ?? sub.summary
+  return (
+    <li className="border border-line/80 bg-panel/50">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 px-2.5 py-2 text-left text-sm hover:bg-teal/5"
+      >
+        <span className="text-paper">
+          <span className="mr-1.5 font-mono text-[10px] text-mist">{open ? '▾' : '▸'}</span>
+          {sub.title}
+          <span className="ml-2 font-mono text-[10px] text-mist">{sub.service}</span>
+        </span>
+        <StatusPill status={sub.status} />
+      </button>
+      {open && (
+        <div className="border-t border-line px-2.5 py-2">
+          <p className="mb-1 text-xs text-mist">{sub.role}</p>
+          {body ? (
+            <JsonBlock value={body} />
+          ) : (
+            <p className="font-mono text-xs text-mist">No output yet for this subagent.</p>
+          )}
+        </div>
+      )}
+    </li>
+  )
+}
+
+function StatusPill({ status }: { status: string }) {
+  const color =
+    status === 'completed'
+      ? 'text-teal'
+      : status === 'running'
+        ? 'text-amber'
+        : status === 'failed'
+          ? 'text-danger'
+          : 'text-mist'
+  return (
+    <span className={`font-mono text-[10px] uppercase tracking-wide ${color}`}>{status}</span>
+  )
+}
+
+function JsonBlock({ value }: { value: unknown }) {
+  const text = useMemo(() => {
+    try {
+      return JSON.stringify(value, null, 2)
+    } catch {
+      return String(value)
+    }
+  }, [value])
+  const empty =
+    value == null ||
+    (typeof value === 'object' &&
+      value !== null &&
+      Object.values(value as Record<string, unknown>).every((v) => v == null))
+  if (empty) {
+    return <p className="font-mono text-xs text-mist">No structured output recorded yet.</p>
+  }
+  return (
+    <pre className="mt-1 max-h-56 overflow-auto rounded border border-line bg-ink-2/80 p-2 font-mono text-[11px] leading-relaxed text-paper/90">
+      {text}
+    </pre>
   )
 }
 

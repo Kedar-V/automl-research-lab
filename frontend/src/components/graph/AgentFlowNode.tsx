@@ -9,6 +9,8 @@ export type AgentFlowNodeData = {
   status: AgentNodeStatus
   kind: 'supervisor' | 'lead' | 'subagent' | 'planned'
   planned?: boolean
+  expanded?: boolean
+  onToggleExpand?: () => void
 }
 
 type AgentNode = Node<AgentFlowNodeData, 'agent'>
@@ -22,6 +24,7 @@ const statusClass: Record<AgentNodeStatus, string> = {
 
 function AgentFlowNodeComponent({ data }: NodeProps<AgentNode>) {
   const planned = data.kind === 'planned' || data.planned
+  const showExpand = data.kind === 'lead' && data.onToggleExpand
   return (
     <div
       className={`min-w-[160px] max-w-[200px] border px-3 py-2 shadow-sm ${
@@ -37,13 +40,28 @@ function AgentFlowNodeComponent({ data }: NodeProps<AgentNode>) {
         <p className={`text-sm font-medium leading-tight ${planned ? 'text-amber' : 'text-paper'}`}>
           {data.title}
         </p>
-        <span
-          className={`shrink-0 rounded border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide ${
-            planned ? 'border-amber/40 text-amber' : statusClass[data.status]
-          }`}
-        >
-          {planned ? 'planned' : data.status}
-        </span>
+        <div className="flex shrink-0 items-center gap-1">
+          {showExpand && (
+            <button
+              type="button"
+              aria-label={data.expanded ? 'Collapse subagents' : 'Expand subagents'}
+              onClick={(e) => {
+                e.stopPropagation()
+                data.onToggleExpand?.()
+              }}
+              className="border border-line px-1 font-mono text-[10px] text-mist hover:border-teal hover:text-teal"
+            >
+              {data.expanded ? '−' : '+'}
+            </button>
+          )}
+          <span
+            className={`rounded border px-1.5 py-0.5 font-mono text-[9px] uppercase tracking-wide ${
+              planned ? 'border-amber/40 text-amber' : statusClass[data.status]
+            }`}
+          >
+            {planned ? 'planned' : data.status}
+          </span>
+        </div>
       </div>
       <p className="mt-1 text-[11px] leading-snug text-mist">{data.role}</p>
       <p className="mt-2 font-mono text-[9px] uppercase tracking-wider text-teal-dim">{data.service}</p>

@@ -2,7 +2,6 @@ import { useCallback, useMemo, useState } from 'react'
 import {
   Background,
   Controls,
-  MiniMap,
   ReactFlow,
   ReactFlowProvider,
   type Edge,
@@ -62,6 +61,11 @@ function LiveAgentGraphInner({ state }: { state: SessionState }) {
     return ids
   }, [mode, expandedLeads])
 
+  const toggleLeadExpand = useCallback((leadId: string) => {
+    setMode('detailed')
+    setExpandedLeads((prev) => ({ ...prev, [leadId]: prev[leadId] === false }))
+  }, [])
+
   const nodes: Node[] = useMemo(() => {
     return AGENT_NODES.filter((n) => visibleNodeIds.has(n.id)).map((n) => {
       const runtime = state.agentNodes[n.id]
@@ -72,6 +76,8 @@ function LiveAgentGraphInner({ state }: { state: SessionState }) {
         status: runtime?.status ?? 'pending',
         kind: n.kind,
         planned: n.kind === 'planned',
+        expanded: n.kind === 'lead' ? expandedLeads[n.id] !== false : undefined,
+        onToggleExpand: n.kind === 'lead' ? () => toggleLeadExpand(n.id) : undefined,
       }
       return {
         id: n.id,
@@ -83,7 +89,7 @@ function LiveAgentGraphInner({ state }: { state: SessionState }) {
         draggable: false,
       }
     })
-  }, [visibleNodeIds, state.agentNodes, selectedId])
+  }, [visibleNodeIds, state.agentNodes, selectedId, expandedLeads, toggleLeadExpand])
 
   const edges: Edge[] = useMemo(() => {
     const running = new Set(
@@ -121,11 +127,6 @@ function LiveAgentGraphInner({ state }: { state: SessionState }) {
 
   const onNodeClick: NodeMouseHandler = useCallback((_event, node) => {
     setSelectedId(node.id)
-    const def = AGENT_NODES.find((n) => n.id === node.id)
-    if (def?.kind === 'lead') {
-      setExpandedLeads((prev) => ({ ...prev, [node.id]: !prev[node.id] }))
-      setMode('detailed')
-    }
   }, [])
 
   return (
@@ -177,18 +178,6 @@ function LiveAgentGraphInner({ state }: { state: SessionState }) {
         >
           <Background gap={20} color="#c8d5ce" />
           <Controls showInteractive={false} />
-          <MiniMap
-            pannable
-            zoomable
-            nodeColor={(n) => {
-              const s = (n.data as AgentFlowNodeData | undefined)?.status
-              if ((n.data as AgentFlowNodeData | undefined)?.kind === 'planned') return '#e8b84a'
-              if (s === 'running') return '#0d8f6e'
-              if (s === 'completed') return '#1f7a45'
-              if (s === 'failed') return '#c45c4a'
-              return '#c8d5ce'
-            }}
-          />
           <GraphLegend />
         </ReactFlow>
         <NodeSidePanel

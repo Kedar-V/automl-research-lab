@@ -17,19 +17,27 @@ export function ScoreChart({
   experiments: ExperimentEntry[]
   targetScore: number
 }) {
-  const data = experiments
-    .filter((e) => typeof e.validationMetrics.f1 === 'number')
-    .map((e, i) => ({
+  const data = experiments.map((e, i) => {
+    const f1 = e.validationMetrics.f1
+    return {
       index: i + 1,
       id: e.experimentId,
-      f1: e.validationMetrics.f1,
-    }))
+      family: e.modelFamily ?? e.experimentId,
+      status: e.status,
+      f1: typeof f1 === 'number' ? f1 : null,
+      note: e.note,
+    }
+  })
+  const scored = data.filter((d) => typeof d.f1 === 'number').length
 
   return (
     <section>
       <h2 className="font-display text-xl text-paper">Validation F1 by experiment</h2>
       <p className="mb-3 text-sm text-mist">
         Positive class · dashed line is the {targetScore.toFixed(2)} target
+        {experiments.length > 0
+          ? ` · ${scored} scored / ${experiments.length} trials`
+          : ''}
       </p>
       <div className="h-48 w-full">
         {data.length === 0 ? (
@@ -50,6 +58,18 @@ export function ScoreChart({
                   fontSize: 12,
                   color: '#14241e',
                 }}
+                formatter={(value, _name, item) => {
+                  const row = item?.payload as {
+                    f1: number | null
+                    status: string
+                    family: string
+                    note?: string
+                  }
+                  if (row.f1 == null) {
+                    return [row.note || row.status || 'no score', row.family]
+                  }
+                  return [Number(value).toFixed(3), row.family]
+                }}
               />
               <ReferenceLine
                 y={targetScore}
@@ -62,7 +82,33 @@ export function ScoreChart({
                 dataKey="f1"
                 stroke="#0d8f6e"
                 strokeWidth={2}
-                dot={{ r: 4, fill: '#0d8f6e' }}
+                connectNulls={false}
+                dot={(props) => {
+                  const { cx, cy, payload } = props
+                  if (cx == null || cy == null) return null
+                  if (payload.f1 == null) {
+                    return (
+                      <circle
+                        key={`miss-${payload.index}`}
+                        cx={cx}
+                        cy={4}
+                        r={3}
+                        fill="transparent"
+                        stroke="#b42318"
+                        strokeWidth={1.5}
+                      />
+                    )
+                  }
+                  return (
+                    <circle
+                      key={`hit-${payload.index}`}
+                      cx={cx}
+                      cy={cy}
+                      r={4}
+                      fill="#0d8f6e"
+                    />
+                  )
+                }}
                 isAnimationActive={false}
               />
             </LineChart>

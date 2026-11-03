@@ -1,4 +1,4 @@
-"""Gateway — Stage A1 mock mode serves sessions + timed SSE fixture replay."""
+"""Gateway — mock SSE, live Redis-backed SSE, or recorded real-run replay."""
 
 from __future__ import annotations
 
@@ -7,139 +7,539 @@ import os
 import sys
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "services"))
 
 from contracts import (  # noqa: E402
+    CreateProjectRequest,
     CreateSessionRequest,
     CreateSessionResponse,
+    EventType,
     HealthResponse,
+    PriorDataset,
+    ProjectDetail,
+    ProjectSummary,
     SessionCommandResponse,
+    TrainingSessionRecord,
 )
 from mocks.fixtures import SCENARIO_NAMES  # noqa: E402
 from _shared.correlation import CorrelationIdMiddleware  # noqa: E402
 
 from services.gateway.app.mock_sessions import store  # noqa: E402
 from services.gateway.app import mock_sessions as mock_mod  # noqa: E402
+from services.gateway.app.live_sessions import live_store  # noqa: E402
+from services.gateway.app.project_store import project_store  # noqa: E402
+from services.gateway.app.replay import list_recordings, replay_store  # noqa: E402
+from services.gateway.app.redis_bus import bus, bus_status  # noqa: E402
 
 SERVICE_NAME = "gateway"
-MOCK_GATEWAY = os.getenv("MOCK_GATEWAY", "true").lower() in {"1", "true", "yes"}
+# Env default for health; per-session mode comes from CreateSessionRequest.
+DEFAULT_MODE = os.getenv("GATEWAY_DEFAULT_MODE", "live")
+MOCK_DATASET_SERVICE = os.getenv("MOCK_DATASET_SERVICE", "false").lower() in {"1", "true", "yes"}
+DATASET_SERVICE_URL = os.getenv("DATASET_SERVICE_URL", "http://dataset_service:8004")
+SERVICE_TOKEN = os.getenv("SERVICE_TOKEN", "dev-service-token")
 
-app = FastAPI(title="AutoML Gateway", version="0.1.0")
+app = FastAPI(title="AutoML Gateway", version="0.3.0")
 app.add_middleware(CorrelationIdMiddleware)
+
+# session_id -> mode
+_session_modes: dict[str, str] = {}
 
 
 def _correlation_id(request: Request) -> str:
     return getattr(request.state, "correlation_id", "unknown")
 
 
+def _resolve_mode(body: CreateSessionRequest) -> str:
+    # Explicit mode wins. Legacy: mock=true or a fixture scenario name ⇒ mock.
+    if body.mock:
+        return "mock"
+    if body.mode and body.mode != "live":
+        return body.mode
+    if body.scenario:
+        return "mock"
+    if body.mode == "live":
+        return "live"
+    return DEFAULT_MODE
+
+
+@app.on_event("startup")
+async def _startup() -> None:
+    await bus.connect()
+
+
 @app.get("/healthz", response_model=HealthResponse)
-def healthz() -> HealthResponse:
+async def healthz() -> HealthResponse:
+    redis_ok = await bus.connect()
     return HealthResponse(
         status="ok",
         service=SERVICE_NAME,
-        mock=MOCK_GATEWAY,
-        details={"mode": "mock" if MOCK_GATEWAY else "live", "scenarios": list(SCENARIO_NAMES)},
+        mock=False,
+        details={
+            "default_mode": DEFAULT_MODE,
+            "scenarios": list(SCENARIO_NAMES),
+            "redis": {**bus_status(), "connected": redis_ok},
+            "recordings": list_recordings(),
+        },
     )
+
+
+@app.get("/services/health")
+async def services_health() -> dict:
+    """Aggregate /healthz probes for the Control Center strip (and debugging)."""
+    from services.gateway.app.service_health import probe_payload
+
+    return await probe_payload()
+
+
+@app.get("/recordings")
+def recordings() -> dict:
+    return {"items": list_recordings()}
+
+
+def _register_training_session(
+    *,
+    session_id: str,
+    body: CreateSessionRequest,
+    mode: str,
+    mock: bool,
+    replay: bool,
+    dataset_filename: str | None = None,
+    dataset_id: str | None = None,
+    status: str = "created",
+) -> str | None:
+    """Attach session to a project when project_id is provided. Returns project_id."""
+    project_id = body.project_id
+    if not project_id:
+        return None
+    if not project_store.ensure_project(project_id):
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found")
+    project_store.register_session(
+        session_id=session_id,
+        project_id=project_id,
+        target_column=body.target_column,
+        mode=mode,  # type: ignore[arg-type]
+        mock=mock,
+        replay=replay,
+        task_type=body.task_type,
+        metric=body.metric,
+        target_score=body.target_score,
+        experiment_budget=body.experiment_budget,
+        dataset_filename=dataset_filename or body.dataset_filename,
+        dataset_id=dataset_id,
+        status=status,
+        research_strategy=body.research_strategy,
+        fixed_model_family=body.fixed_model_family,
+        per_trial_timeout_seconds=body.per_trial_timeout_seconds,
+    )
+    return project_id
+
+
+@app.get("/projects", response_model=list[ProjectSummary])
+def list_projects() -> list[ProjectSummary]:
+    return project_store.list_projects()
+
+
+@app.post("/projects", response_model=ProjectSummary, status_code=status.HTTP_201_CREATED)
+def create_project(body: CreateProjectRequest) -> ProjectSummary:
+    return project_store.create_project(name=body.name, description=body.description)
+
+
+@app.get("/projects/{project_id}", response_model=ProjectDetail)
+def get_project(project_id: str) -> ProjectDetail:
+    detail = project_store.get_project(project_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found")
+    return detail
+
+
+@app.get("/projects/{project_id}/prior-datasets", response_model=list[PriorDataset])
+def list_prior_datasets(project_id: str) -> list[PriorDataset]:
+    """CSVs previously used on this project, plus any files in the datasets catalog."""
+    if not project_store.ensure_project(project_id):
+        raise HTTPException(status_code=404, detail=f"project {project_id} not found")
+    history = {d.filename: d for d in project_store.prior_datasets(project_id)}
+    for item in live_store.list_catalog():
+        name = item["filename"]
+        if name in history:
+            continue
+        history[name] = PriorDataset(
+            filename=name,
+            times_used=0,
+            last_used_at=None,
+            source="catalog",
+        )
+    from datetime import datetime, timezone
+
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    return sorted(
+        history.values(),
+        key=lambda d: (d.last_used_at or epoch, d.filename),
+        reverse=True,
+    )
+
+
+@app.get("/sessions/{session_id}/record", response_model=TrainingSessionRecord)
+def get_session_record(session_id: str) -> TrainingSessionRecord:
+    rec = project_store.get_session(session_id)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"session record {session_id} not found")
+    return rec
+
+
+class SessionRecordPatch(BaseModel):
+    status: str | None = None
+    best_val_score: float | None = None
+    holdout_score: float | None = None
+    stop_reason: str | None = None
+    experiments_used: int | None = None
+
+
+@app.patch("/sessions/{session_id}/record", response_model=TrainingSessionRecord)
+def patch_session_record(session_id: str, body: SessionRecordPatch) -> TrainingSessionRecord:
+    """UI/gateway sync for mock/replay completion and live metric refresh."""
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    rec = project_store.update_session(session_id, **fields)
+    if rec is None:
+        raise HTTPException(status_code=404, detail=f"session record {session_id} not found")
+    return rec
 
 
 @app.post("/sessions", response_model=CreateSessionResponse, status_code=status.HTTP_201_CREATED)
 async def create_session(body: CreateSessionRequest, request: Request) -> CreateSessionResponse:
-    if not MOCK_GATEWAY:
-        raise HTTPException(status_code=501, detail="live gateway arrives in Stage C7")
-    scenario = body.scenario or "happy"
-    if scenario not in SCENARIO_NAMES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"unknown scenario {scenario!r}; choose one of {list(SCENARIO_NAMES)}",
+    mode = _resolve_mode(body)
+    cid = _correlation_id(request)
+
+    if mode == "mock":
+        scenario = body.scenario or "happy"
+        if scenario not in SCENARIO_NAMES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown scenario {scenario!r}; choose one of {list(SCENARIO_NAMES)}",
+            )
+        session = await store.create(scenario=scenario, correlation_id=cid)
+        _session_modes[session.session_id] = "mock"
+        project_id = _register_training_session(
+            session_id=session.session_id,
+            body=body,
+            mode="mock",
+            mock=True,
+            replay=False,
+            dataset_filename=body.dataset_filename or "mock-fixture",
+            status="running",
         )
-    session = await store.create(scenario=scenario, correlation_id=_correlation_id(request))
-    return CreateSessionResponse(session_id=session.session_id, status="created", mock=True)
+        return CreateSessionResponse(
+            session_id=session.session_id,
+            status="created",
+            mock=True,
+            mode="mock",
+            replay=False,
+            project_id=project_id,
+        )
+
+    if mode == "replay":
+        session = await replay_store.create(correlation_id=cid, recording=body.recording)
+        _session_modes[session.session_id] = "replay"
+        project_id = _register_training_session(
+            session_id=session.session_id,
+            body=body,
+            mode="replay",
+            mock=False,
+            replay=True,
+            dataset_filename=body.dataset_filename or body.recording or "replay",
+            status="running",
+        )
+        return CreateSessionResponse(
+            session_id=session.session_id,
+            status="created",
+            mock=False,
+            mode="replay",
+            replay=True,
+            project_id=project_id,
+        )
+
+    # live
+    reuse_name = (body.reuse_dataset_filename or "").strip() or None
+    auto_upload = bool(body.use_sample_dataset) and not reuse_name
+    try:
+        session = await live_store.create(
+            correlation_id=cid,
+            target_column=body.target_column,
+            task_type=body.task_type,
+            metric=body.metric,
+            target_score=body.target_score,
+            experiment_budget=body.experiment_budget,
+            auto_upload=auto_upload,
+            project_id=body.project_id,
+            dataset_filename=body.dataset_filename or reuse_name,
+            research_strategy=body.research_strategy,
+            fixed_model_family=body.fixed_model_family,
+            per_trial_timeout_seconds=body.per_trial_timeout_seconds,
+        )
+        if reuse_name:
+            path = live_store.resolve_catalog_path(reuse_name)
+            await live_store.attach_dataset_file(session, path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"live session setup failed: {exc}") from exc
+    _session_modes[session.session_id] = "live"
+    project_id = _register_training_session(
+        session_id=session.session_id,
+        body=body,
+        mode="live",
+        mock=False,
+        replay=False,
+        dataset_filename=session.dataset_filename or body.dataset_filename or reuse_name,
+        dataset_id=session.dataset_id,
+        status="created",
+    )
+    return CreateSessionResponse(
+        session_id=session.session_id,
+        status="created",
+        mock=False,
+        mode="live",
+        replay=False,
+        project_id=project_id,
+    )
 
 
 @app.post("/sessions/{session_id}/pause", response_model=SessionCommandResponse)
 async def pause_session(session_id: str) -> SessionCommandResponse:
-    if not MOCK_GATEWAY:
-        raise HTTPException(status_code=501, detail="live gateway arrives in Stage C7")
-    try:
-        session = await store.pause(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"session {session_id} not found") from None
+    mode = _session_modes.get(session_id, "live")
+    if mode == "mock":
+        try:
+            session = await store.pause(session_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"session {session_id} not found") from None
+        return SessionCommandResponse(
+            session_id=session.session_id,
+            status=session.status.value,
+            message="paused at next fixture step",
+            mock=True,
+            mode="mock",
+        )
+    if mode == "replay":
+        return SessionCommandResponse(
+            session_id=session_id, status="paused", message="replay pause is cooperative only", mode="replay"
+        )
+    session = live_store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"session {session_id} not found")
+    session.status = "paused"
     return SessionCommandResponse(
-        session_id=session.session_id,
-        status=session.status.value,
-        message="paused at next fixture step",
-        mock=True,
+        session_id=session_id, status="paused", message="pause acknowledged", mode="live"
     )
 
 
 @app.post("/sessions/{session_id}/resume", response_model=SessionCommandResponse)
 async def resume_session(session_id: str) -> SessionCommandResponse:
-    if not MOCK_GATEWAY:
-        raise HTTPException(status_code=501, detail="live gateway arrives in Stage C7")
-    try:
-        session = await store.resume(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"session {session_id} not found") from None
+    mode = _session_modes.get(session_id, "live")
+    if mode == "mock":
+        try:
+            session = await store.resume(session_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"session {session_id} not found") from None
+        return SessionCommandResponse(
+            session_id=session.session_id,
+            status=session.status.value,
+            message="resumed",
+            mock=True,
+            mode="mock",
+        )
+    if mode == "replay":
+        return SessionCommandResponse(
+            session_id=session_id, status="running", message="replay continues", mode="replay"
+        )
+    session = live_store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"session {session_id} not found")
+    if session.dataset_id:
+        await live_store.start_run(session)
     return SessionCommandResponse(
-        session_id=session.session_id,
-        status=session.status.value,
-        message="resumed",
-        mock=True,
+        session_id=session_id, status=session.status, message="resumed", mode="live"
     )
 
 
 @app.post("/sessions/{session_id}/reset", response_model=SessionCommandResponse)
 async def reset_session(session_id: str) -> SessionCommandResponse:
-    if not MOCK_GATEWAY:
-        raise HTTPException(status_code=501, detail="live gateway arrives in Stage C7")
-    try:
-        session = await store.reset(session_id)
-    except KeyError:
-        raise HTTPException(status_code=404, detail=f"session {session_id} not found") from None
+    mode = _session_modes.get(session_id, "live")
+    if mode == "mock":
+        try:
+            session = await store.reset(session_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail=f"session {session_id} not found") from None
+        return SessionCommandResponse(
+            session_id=session.session_id,
+            status=session.status.value,
+            message="reset — SSE stream cancelled",
+            mock=True,
+            mode="mock",
+        )
+    if mode == "replay":
+        return SessionCommandResponse(
+            session_id=session_id, status="reset", message="replay reset", mode="replay"
+        )
+    session = live_store.get(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"session {session_id} not found")
+    session.status = "reset"
+    session.final_state = None
     return SessionCommandResponse(
-        session_id=session.session_id,
-        status=session.status.value,
-        message="reset — SSE stream cancelled",
-        mock=True,
+        session_id=session_id, status="reset", message="reset", mode="live"
+    )
+
+
+async def _revive_live_session(session_id: str):
+    """Rebuild an in-memory live session from the project registry and/or Redis stream."""
+    existing = live_store.get(session_id)
+    if existing is not None:
+        return existing
+    rec = project_store.get_session(session_id)
+    has_stream = await bus.stream_exists(session_id)
+    if rec is None and not has_stream:
+        return None
+    if rec is not None and rec.mode not in (None, "live"):
+        # Mock/replay sessions are handled by their own stores.
+        if not has_stream:
+            return None
+    return live_store.revive(
+        session_id,
+        status=(rec.status if rec else "completed"),
+        target_column=(rec.target_column if rec else "churned"),
+        task_type=(rec.task_type if rec else "classification"),
+        metric=(rec.metric if rec else "f1"),
+        target_score=(rec.target_score if rec else 0.7),
+        experiment_budget=(rec.experiment_budget if rec else 5),
+        research_strategy=(rec.research_strategy if rec else "model_search"),
+        fixed_model_family=(rec.fixed_model_family if rec else None),
+        per_trial_timeout_seconds=(rec.per_trial_timeout_seconds if rec else 120),
+        project_id=(rec.project_id if rec else None),
+        dataset_id=(rec.dataset_id if rec else None),
+        dataset_filename=(rec.dataset_filename if rec else None),
     )
 
 
 @app.get("/sessions/{session_id}/events")
 async def session_events(
     session_id: str,
-    scenario: str | None = Query(
-        default=None,
-        description="Ignored if session already created; listed for curl demos",
-    ),
+    request: Request,
+    scenario: str | None = Query(default=None),
 ) -> StreamingResponse:
-    """SSE fan-out of fixture events. Every event has mock: true."""
-    if not MOCK_GATEWAY:
-        raise HTTPException(status_code=501, detail="live SSE arrives in Stage C7")
-    session = store.get(session_id)
+    mode = _session_modes.get(session_id)
+    if mode is None:
+        # Infer from stores for resilience after restart (replay/live ids are prefixed).
+        if store.get(session_id) is not None:
+            mode = "mock"
+        elif replay_store.get(session_id) is not None:
+            mode = "replay"
+        elif live_store.get(session_id) is not None:
+            mode = "live"
+        elif await _revive_live_session(session_id) is not None:
+            mode = "live"
+            _session_modes[session_id] = "live"
+        else:
+            raise HTTPException(status_code=404, detail=f"session {session_id} not found")
+
+    if mode == "mock":
+        session = store.get(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail=f"session {session_id} not found")
+        _ = scenario
+
+        async def mock_stream():
+            async for event in mock_mod.replay_scenario(session):
+                payload = event.model_dump(mode="json")
+                yield ": mock fixture event\n"
+                yield f"event: {event.type.value}\n"
+                yield f"data: {json.dumps(payload)}\n\n"
+
+        return StreamingResponse(
+            mock_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Mock-Backend": "true",
+                "X-Session-Mode": "mock",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    if mode == "replay":
+        session = replay_store.get(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail=f"session {session_id} not found")
+
+        async def replay_stream():
+            async for event in replay_store.subscribe(session):
+                payload = event.model_dump(mode="json")
+                yield ": replay of a recorded real run\n"
+                yield f"event: {event.type.value}\n"
+                yield f"data: {json.dumps(payload)}\n\n"
+
+        return StreamingResponse(
+            replay_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Mock-Backend": "false",
+                "X-Session-Mode": "replay",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    session = live_store.get(session_id) or await _revive_live_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail=f"session {session_id} not found")
-    _ = scenario  # OpenAPI discoverability; session already bound to a scenario.
+    _session_modes[session_id] = "live"
 
-    async def event_stream():
-        async for event in mock_mod.replay_scenario(session):
-            # SSE: data is a JSON EventEnvelope; comment marks mock for humans watching curl.
+    last_event_id = request.headers.get("Last-Event-ID") or "0-0"
+
+    async def live_stream():
+        # Push a health snapshot first so the strip updates even if Redis
+        # cursor / reconnect skips the probe published inside subscribe().
+        try:
+            from datetime import datetime, timezone
+
+            from services.gateway.app.service_health import probe_payload
+
+            health_payload = await probe_payload()
+            health_event = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "session_id": session_id,
+                "correlation_id": session.correlation_id,
+                "source_service": "gateway",
+                "source_agent": None,
+                "type": EventType.HEALTH.value,
+                "payload": health_payload,
+                "mock": False,
+            }
+            yield f"event: {EventType.HEALTH.value}\n"
+            yield f"data: {json.dumps(health_event)}\n\n"
+        except Exception:  # noqa: BLE001
+            pass
+        async for msg_id, event in live_store.subscribe(session, last_id=last_event_id):
             payload = event.model_dump(mode="json")
-            yield f": mock fixture event\n"
+            if msg_id:
+                yield f"id: {msg_id}\n"
             yield f"event: {event.type.value}\n"
             yield f"data: {json.dumps(payload)}\n\n"
 
     return StreamingResponse(
-        event_stream(),
+        live_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
-            "X-Mock-Backend": "true",
+            "X-Mock-Backend": "false",
+            "X-Session-Mode": "live",
             "X-Accel-Buffering": "no",
         },
     )
@@ -149,19 +549,220 @@ async def session_events(
 async def upload_dataset(
     session_id: str,
     file: UploadFile | None = File(default=None),
+    target_column: str = Form(default="churned"),
+    task_type: str = Form(default="classification"),
 ) -> JSONResponse:
-    """Mock upload proxy — records filename only; no real split yet (Stage C1)."""
-    if not MOCK_GATEWAY:
-        raise HTTPException(status_code=501, detail="live upload proxy arrives in Stage C7")
-    if store.get(session_id) is None:
+    mode = _session_modes.get(session_id, "live")
+    if mode == "mock":
+        if store.get(session_id) is None:
+            raise HTTPException(status_code=404, detail=f"session {session_id} not found")
+        if MOCK_DATASET_SERVICE:
+            filename = file.filename if file else "churn_sample.csv"
+            return JSONResponse(
+                {
+                    "session_id": session_id,
+                    "dataset_id": f"ds-mock-{session_id[-8:]}",
+                    "filename": filename,
+                    "mock": True,
+                    "note": "SAMPLE: upload accepted in mock mode",
+                }
+            )
+
+    if mode == "replay":
+        return JSONResponse(
+            {
+                "session_id": session_id,
+                "dataset_id": "ds-recorded",
+                "mock": False,
+                "mode": "replay",
+                "note": "Replay uses the recorded dataset id; upload ignored",
+            }
+        )
+
+    live = live_store.get(session_id)
+    if live is None and mode == "live":
         raise HTTPException(status_code=404, detail=f"session {session_id} not found")
-    filename = file.filename if file else "churn_sample.csv"
-    return JSONResponse(
-        {
-            "session_id": session_id,
-            "dataset_id": f"ds-mock-{session_id[-8:]}",
-            "filename": filename,
-            "mock": True,
-            "note": "SAMPLE: upload accepted in mock mode; real split in Stage C1",
-        }
+
+    if MOCK_DATASET_SERVICE:
+        filename = file.filename if file else "churn_sample.csv"
+        return JSONResponse(
+            {
+                "session_id": session_id,
+                "dataset_id": f"ds-mock-{session_id[-8:]}",
+                "filename": filename,
+                "mock": True,
+            }
+        )
+
+    import httpx
+
+    if file is None:
+        raise HTTPException(status_code=400, detail="file required")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="empty file")
+    try:
+        live_store.save_to_catalog(file.filename or "upload.csv", content)
+    except OSError:
+        pass
+    async with httpx.AsyncClient(timeout=180.0) as client:
+        resp = await client.post(
+            f"{DATASET_SERVICE_URL}/datasets",
+            headers={"X-Service-Token": SERVICE_TOKEN, "X-Correlation-Id": session_id},
+            files={"file": (file.filename or "upload.csv", content, file.content_type or "text/csv")},
+            data={"target_column": target_column, "task_type": task_type},
+        )
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=resp.status_code, detail=resp.text)
+    body = resp.json()
+    body["session_id"] = session_id
+    if live is not None:
+        live.dataset_id = body["dataset_id"]
+        live.target_column = body.get("target_column") or target_column
+        live.task_type = task_type
+        live.dataset_filename = file.filename or "upload.csv"
+        if live.project_id:
+            project_store.update_session(
+                live.session_id,
+                dataset_id=live.dataset_id,
+                dataset_filename=live.dataset_filename,
+                target_column=live.target_column,
+            )
+        await live_store.emit(
+            live,
+            EventType.ACTIVITY,
+            {
+                "message": "dataset uploaded",
+                "dataset_id": live.dataset_id,
+                "filename": file.filename or "upload.csv",
+                "n_rows": body.get("n_rows"),
+                "ingest_notes": body.get("ingest_notes"),
+            },
+            source_service="dataset_service",
+        )
+    return JSONResponse(body)
+
+
+# --- Simple research loop (teaching LangGraph; isolated node scripts) ---
+
+MINI_LOOP_ROOT = Path(os.getenv("MINI_LOOP_ROOT", str(ROOT / "mini_loop")))
+if not MINI_LOOP_ROOT.exists():
+    MINI_LOOP_ROOT = Path("/mini_loop")
+
+
+class SimpleLoopRequest(BaseModel):
+    dataset_path: str | None = None
+    target_column: str = "Survived"
+    target_score: float = 0.8
+    max_cycles: int = 3
+    seed: int = 42
+
+
+@app.get("/simple-loop/info")
+def simple_loop_info() -> dict:
+    return {
+        "root": str(MINI_LOOP_ROOT),
+        "available": (MINI_LOOP_ROOT / "graph.py").exists(),
+        "default_dataset": "Titanic-Dataset.csv",
+        "default_target": "Survived",
+        "nodes": [
+            "data_scientist",
+            "hypothesis_generator",
+            "ml_engineer",
+            "judge",
+            "memory_writer",
+            "context_builder",
+            "holdout_eval",
+        ],
+        "router": "conditional edge accept|revise|reject",
+        "llm": {
+            "provider": "openrouter",
+            "model": os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free"),
+            "key_configured": bool(os.getenv("OPENROUTER_API_KEY")),
+        },
+    }
+
+
+def _resolve_simple_loop_dataset(explicit: str | None) -> str:
+    if explicit and Path(explicit).exists():
+        return explicit
+    candidates = [
+        ROOT / "datasets" / "Titanic-Dataset.csv",
+        Path("/bundled/Titanic-Dataset.csv"),
+        MINI_LOOP_ROOT.parent / "datasets" / "Titanic-Dataset.csv",
+    ]
+    found = next((str(p) for p in candidates if p.exists()), None)
+    if not found:
+        raise HTTPException(status_code=400, detail="dataset_path required (Titanic default not found)")
+    return found
+
+
+def _import_simple_loop():
+    if not (MINI_LOOP_ROOT / "graph.py").exists():
+        raise HTTPException(status_code=503, detail=f"mini_loop missing at {MINI_LOOP_ROOT}")
+    pkg_root = MINI_LOOP_ROOT.parent
+    if str(pkg_root) not in sys.path:
+        sys.path.insert(0, str(pkg_root))
+    try:
+        from mini_loop import graph as mini_graph
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=f"cannot import mini_loop.graph: {exc}") from exc
+    return mini_graph
+
+
+@app.post("/simple-loop/run")
+async def simple_loop_run(body: SimpleLoopRequest) -> JSONResponse:
+    """Run the teaching LangGraph (each node = isolated Python script)."""
+    dataset = _resolve_simple_loop_dataset(body.dataset_path)
+    mini_graph = _import_simple_loop()
+    try:
+        result = mini_graph.run_simple_loop(
+            dataset_path=dataset,
+            target_column=body.target_column,
+            target_score=body.target_score,
+            max_cycles=body.max_cycles,
+            seed=body.seed,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"simple-loop failed: {exc}") from exc
+    return JSONResponse(result)
+
+
+@app.get("/simple-loop/stream")
+async def simple_loop_stream(
+    target_column: str = Query(default="Survived"),
+    target_score: float = Query(default=0.8),
+    max_cycles: int = Query(default=3, ge=1, le=8),
+    seed: int = Query(default=42),
+    dataset_path: str | None = Query(default=None),
+) -> StreamingResponse:
+    """SSE stream of LangGraph node events for the live simple-loop UI."""
+    dataset = _resolve_simple_loop_dataset(dataset_path)
+    mini_graph = _import_simple_loop()
+
+    def event_stream():
+        try:
+            for ev in mini_graph.stream_simple_loop(
+                dataset_path=dataset,
+                target_column=target_column,
+                target_score=target_score,
+                max_cycles=max_cycles,
+                seed=seed,
+            ):
+                etype = str(ev.get("type") or "message")
+                yield f"event: {etype}\n"
+                yield f"data: {json.dumps(ev, default=str)}\n\n"
+        except Exception as exc:  # noqa: BLE001
+            err = {"type": "error", "message": str(exc)}
+            yield "event: error\n"
+            yield f"data: {json.dumps(err)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
     )

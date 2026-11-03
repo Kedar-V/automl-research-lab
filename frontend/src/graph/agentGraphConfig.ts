@@ -87,7 +87,7 @@ export const AGENT_NODES: AgentNodeDef[] = [
     role: 'Validate, run, repair',
     service: 'orchestrator',
     kind: 'lead',
-    responsibility: 'Bounded recovery: validate → run → one repair → retry.',
+    responsibility: 'Bounded recovery: validate → run → self-heal (budget 3) → retry.',
   },
   {
     id: 'config_validator',
@@ -114,7 +114,7 @@ export const AGENT_NODES: AgentNodeDef[] = [
     service: 'orchestrator',
     kind: 'subagent',
     leadId: 'ml_engineer',
-    responsibility: 'Proposes a single fix from typed errors; then revalidate and retry.',
+    responsibility: 'Proposes a fix from typed errors; revalidate and retry (up to 3 heals).',
   },
   {
     id: 'judge',

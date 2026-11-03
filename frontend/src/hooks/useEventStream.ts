@@ -28,6 +28,7 @@ const EVENT_TYPES: EventType[] = [
  * Single SSE hook for the Control Center.
  * Panels update only from events — never invent metrics client-side.
  * Gateway emits named SSE event types; we subscribe to each.
+ * Live streams stay open across brief disconnects (EventSource auto-reconnect).
  */
 export function useEventStream(
   sessionId: string | null,
@@ -44,6 +45,7 @@ export function useEventStream(
     if (!sessionId || !enabled) return
 
     const source = new EventSource(eventsUrl(sessionId))
+    let intentionalClose = false
 
     const handle = (msg: MessageEvent<string>) => {
       try {
@@ -60,11 +62,16 @@ export function useEventStream(
     }
 
     source.onerror = () => {
-      // Fixture streams end by closing; avoid noisy retries.
-      source.close()
+      // Mock/replay streams end by closing the socket — fine to stop.
+      // Live streams: let EventSource reconnect with Last-Event-ID.
+      const isLive = sessionId.startsWith('sess-')
+      if (!isLive || intentionalClose) {
+        source.close()
+      }
     }
 
     return () => {
+      intentionalClose = true
       source.close()
     }
   }, [sessionId, enabled])

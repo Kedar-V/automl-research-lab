@@ -49,8 +49,8 @@ export function NodeSidePanel({
           </div>
           {(nodeId === 'ml_engineer' || def.leadId === 'ml_engineer') && (
             <div>
-              <dt className="text-mist">Retry count</dt>
-              <dd className="text-paper">{mlRetryCount}</dd>
+              <dt className="text-mist">Self-heal used</dt>
+              <dd className="text-paper">{mlRetryCount} / 3</dd>
             </div>
           )}
           <div>

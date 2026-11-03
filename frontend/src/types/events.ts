@@ -74,10 +74,14 @@ export interface AgentNodeRuntime {
   updatedAt?: string
 }
 
+export type SessionMode = 'live' | 'mock' | 'replay'
+
 export interface SessionState {
   sessionId: string | null
   status: SessionRunStatus
   mock: boolean
+  replay: boolean
+  mode: SessionMode
   scenario: string
   dataset: string
   targetColumn: string
@@ -85,6 +89,13 @@ export interface SessionState {
   targetScore: number
   experimentBudget: number
   experimentsUsed: number
+  /** Per-experiment repair attempts (default 3). */
+  selfHealBudget: number
+  /** blackbox_tuning | model_search */
+  researchStrategy: 'blackbox_tuning' | 'model_search'
+  fixedModelFamily: string | null
+  /** Train+score wall clock per trial (seconds). */
+  perTrialTimeoutSeconds: number
   bestValScore: number | null
   holdoutScore: number | null
   stopReason: string | null
@@ -98,6 +109,9 @@ export interface SessionState {
   activeNodeId: string | null
   mlRetryCount: number
   lastCorrelationId: string | null
+  /** Full agent/trial trail for experiment drill-down */
+  traceEvents: EventEnvelope[]
+  activeExperimentId: string | null
 }
 
 export const SCENARIOS = [

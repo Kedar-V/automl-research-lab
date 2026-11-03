@@ -1,5 +1,4 @@
-# AutoML Research Lab — Stage A0 skeletons + infra stubs.
-# wandb-mcp is behind profile "wandb" so `make up` works without WANDB_API_KEY.
+# AutoML Research Lab — real services (Phase C). wandb-mcp behind profile "wandb".
 
 name: automl-research-lab
 
@@ -30,7 +29,6 @@ services:
       retries: 12
       start_period: 15s
     ports:
-      # Host 5050 — macOS often binds 5000 (AirPlay Receiver).
       - "5050:5000"
     networks: [automl]
 
@@ -41,7 +39,6 @@ services:
       WANDB_API_KEY: ${WANDB_API_KEY:-}
     command: >
       uvx wandb-mcp-server --transport http --port 8080
-    # Internal only — never publish to host.
     expose:
       - "8080"
     networks: [automl]
@@ -55,7 +52,35 @@ services:
         PORT: "8000"
     environment:
       SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
-      MOCK_GATEWAY: ${MOCK_GATEWAY:-true}
+      GATEWAY_DEFAULT_MODE: ${GATEWAY_DEFAULT_MODE:-live}
+      MOCK_DATASET_SERVICE: ${MOCK_DATASET_SERVICE:-false}
+      DATASET_SERVICE_URL: http://dataset_service:8004
+      ORCHESTRATOR_URL: http://orchestrator:8001
+      AGENT_SERVICE_URL: http://agent_service:8002
+      HARNESS_SERVICE_URL: http://harness:8003
+      MEMORY_SERVICE_URL: http://memory_service:8005
+      TRACKING_SERVICE_URL: http://tracking_service:8006
+      GATEWAY_SELF_URL: http://127.0.0.1:8000
+      REDIS_URL: redis://redis:6379/0
+      BUNDLED_CSV: /bundled/churn_sample.csv
+      DATASETS_DIR: /bundled
+      PROJECT_DATA_DIR: /data/projects
+      MINI_LOOP_ROOT: /mini_loop
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-nvidia/nemotron-3.5-lightning:free}
+    volumes:
+      # rw so uploaded CSVs can be reused via the prior-datasets dropdown
+      - ../datasets:/bundled
+      - ../mini_loop:/mini_loop
+      - ../mocks/recordings:/app/mocks/recordings:ro
+      - project_data:/data/projects
+    depends_on:
+      redis:
+        condition: service_healthy
+      dataset_service:
+        condition: service_healthy
+      orchestrator:
+        condition: service_healthy
     ports:
       - "8000:8000"
     healthcheck:
@@ -75,16 +100,32 @@ services:
         PORT: "8001"
     environment:
       SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
-      MOCK_ORCHESTRATOR: ${MOCK_ORCHESTRATOR:-true}
+      HARNESS_TOKEN: ${HARNESS_TOKEN:-${SERVICE_TOKEN:-dev-service-token}}
+      MOCK_ORCHESTRATOR: ${MOCK_ORCHESTRATOR:-false}
+      AGENT_SERVICE_URL: http://agent_service:8002
+      TRACKING_SERVICE_URL: http://tracking_service:8006
+      MEMORY_SERVICE_URL: http://memory_service:8005
+      DATASET_SERVICE_URL: http://dataset_service:8004
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+      agent_service:
+        condition: service_healthy
+      tracking_service:
+        condition: service_healthy
+      memory_service:
+        condition: service_healthy
+      dataset_service:
+        condition: service_healthy
     ports:
-      # Host 8011 — 8001 often taken locally (e.g. other demos).
       - "8011:8001"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/healthz')"]
       interval: 5s
       timeout: 3s
       retries: 10
-      start_period: 5s
+      start_period: 10s
     networks: [automl]
 
   agent_service:
@@ -96,7 +137,20 @@ services:
         PORT: "8002"
     environment:
       SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
-      MOCK_AGENT_SERVICE: ${MOCK_AGENT_SERVICE:-true}
+      MOCK_AGENT_SERVICE: ${MOCK_AGENT_SERVICE:-false}
+      HARNESS_SERVICE_URL: http://harness:8003
+      MEMORY_SERVICE_URL: http://memory_service:8005
+      WANDB_MCP_URL: http://wandb-mcp:8080
+      LLM_PROVIDER: ${LLM_PROVIDER:-cursor}
+      LLM_MODEL: ${LLM_MODEL:-composer-2.5}
+      CURSOR_API_KEY: ${CURSOR_API_KEY:-}
+      # Set AGENT_LLM_ENABLED=true to call Composer 2.5 on LLM subagents (slower live SSE).
+      AGENT_LLM_ENABLED: ${AGENT_LLM_ENABLED:-false}
+    depends_on:
+      harness:
+        condition: service_healthy
+      memory_service:
+        condition: service_healthy
     ports:
       - "8002:8002"
     healthcheck:
@@ -104,7 +158,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-      start_period: 5s
+      start_period: 10s
     networks: [automl]
 
   harness:
@@ -116,7 +170,15 @@ services:
         PORT: "8003"
     environment:
       SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
-      MOCK_HARNESS: ${MOCK_HARNESS:-true}
+      HARNESS_TOKEN: ${HARNESS_TOKEN:-${SERVICE_TOKEN:-dev-service-token}}
+      MOCK_HARNESS: ${MOCK_HARNESS:-false}
+      DATASET_SERVICE_URL: http://dataset_service:8004
+      ARTIFACT_ROOT: /artifacts
+    volumes:
+      - harness_artifacts:/artifacts
+    depends_on:
+      dataset_service:
+        condition: service_healthy
     ports:
       - "8003:8003"
     healthcheck:
@@ -124,7 +186,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-      start_period: 5s
+      start_period: 10s
     networks: [automl]
 
   dataset_service:
@@ -136,7 +198,13 @@ services:
         PORT: "8004"
     environment:
       SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
-      MOCK_DATASET_SERVICE: ${MOCK_DATASET_SERVICE:-true}
+      HARNESS_TOKEN: ${HARNESS_TOKEN:-${SERVICE_TOKEN:-dev-service-token}}
+      MOCK_DATASET_SERVICE: ${MOCK_DATASET_SERVICE:-false}
+      DATASET_DATA_DIR: /data/datasets
+    volumes:
+      - dataset_data:/data/datasets
+      - harness_artifacts:/artifacts:ro
+      - ../datasets:/bundled:ro
     ports:
       - "8004:8004"
     healthcheck:
@@ -144,7 +212,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-      start_period: 5s
+      start_period: 10s
     networks: [automl]
 
   memory_service:
@@ -156,7 +224,7 @@ services:
         PORT: "8005"
     environment:
       SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
-      MOCK_MEMORY_SERVICE: ${MOCK_MEMORY_SERVICE:-true}
+      MOCK_MEMORY_SERVICE: ${MOCK_MEMORY_SERVICE:-false}
     ports:
       - "8005:8005"
     healthcheck:
@@ -176,8 +244,12 @@ services:
         PORT: "8006"
     environment:
       SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
-      MOCK_TRACKING_SERVICE: ${MOCK_TRACKING_SERVICE:-true}
+      MOCK_TRACKING_SERVICE: ${MOCK_TRACKING_SERVICE:-false}
       WANDB_ENABLED: ${WANDB_ENABLED:-false}
+      WANDB_API_KEY: ${WANDB_API_KEY:-}
+      WANDB_PROJECT: ${WANDB_PROJECT:-automl-research-lab}
+      WANDB_ENTITY: ${WANDB_ENTITY:-}
+      MLFLOW_TRACKING_URI: http://mlflow:5000
     ports:
       - "8006:8006"
     depends_on:
@@ -188,7 +260,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-      start_period: 5s
+      start_period: 10s
     networks: [automl]
 
 networks:
@@ -197,3 +269,6 @@ networks:
 
 volumes:
   mlflow_data:
+  dataset_data:
+  harness_artifacts:
+  project_data:

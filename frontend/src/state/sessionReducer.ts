@@ -11,7 +11,9 @@ import type {
 export const initialSessionState = (overrides?: Partial<SessionState>): SessionState => ({
   sessionId: null,
   status: 'idle',
-  mock: true,
+  mock: false,
+  replay: false,
+  mode: 'live',
   scenario: 'happy',
   dataset: 'churn_sample.csv',
   targetColumn: 'churned',
@@ -19,6 +21,10 @@ export const initialSessionState = (overrides?: Partial<SessionState>): SessionS
   targetScore: 0.7,
   experimentBudget: 10,
   experimentsUsed: 0,
+  selfHealBudget: 3,
+  researchStrategy: 'model_search',
+  fixedModelFamily: null,
+  perTrialTimeoutSeconds: 120,
   bestValScore: null,
   holdoutScore: null,
   stopReason: null,
@@ -31,6 +37,8 @@ export const initialSessionState = (overrides?: Partial<SessionState>): SessionS
   activeNodeId: null,
   mlRetryCount: 0,
   lastCorrelationId: null,
+  traceEvents: [],
+  activeExperimentId: null,
   ...overrides,
 })
 
@@ -82,7 +90,13 @@ function numMap(value: unknown): Record<string, number> {
 }
 
 export type SessionAction =
-  | { type: 'SESSION_CREATED'; sessionId: string; mock: boolean }
+  | {
+      type: 'SESSION_CREATED'
+      sessionId: string
+      mock: boolean
+      replay?: boolean
+      mode?: SessionState['mode']
+    }
   | { type: 'STATUS'; status: SessionState['status'] }
   | { type: 'SETUP'; patch: Partial<SessionState> }
   | { type: 'ERROR'; error: string }
@@ -98,6 +112,8 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         ...state,
         sessionId: action.sessionId,
         mock: action.mock,
+        replay: Boolean(action.replay),
+        mode: action.mode ?? (action.mock ? 'mock' : action.replay ? 'replay' : 'live'),
         status: 'running',
         experiments: [],
         activity: [],
@@ -110,6 +126,8 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         activeNodeId: null,
         mlRetryCount: 0,
         lastCorrelationId: null,
+        traceEvents: [],
+        activeExperimentId: null,
       }
     case 'STATUS':
       return { ...state, status: action.status }
@@ -123,6 +141,9 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
         metric: state.metric,
         targetScore: state.targetScore,
         experimentBudget: state.experimentBudget,
+        researchStrategy: state.researchStrategy,
+        fixedModelFamily: state.fixedModelFamily,
+        perTrialTimeoutSeconds: state.perTrialTimeoutSeconds,
       })
     case 'EVENT':
       return reduceEvent(state, action.event)
@@ -131,6 +152,9 @@ export function sessionReducer(state: SessionState, action: SessionAction): Sess
   }
 }
 
+/** Subagents that may never run on the happy path — ignore if still pending when rolling up. */
+const OPTIONAL_SUBAGENTS = new Set(['error_repair'])
+
 function patchAgentNode(
   nodes: Record<string, AgentNodeRuntime>,
   nodeId: string,
@@ -138,6 +162,34 @@ function patchAgentNode(
 ): Record<string, AgentNodeRuntime> {
   const prev = nodes[nodeId] ?? { status: 'pending' as const }
   return { ...nodes, [nodeId]: { ...prev, ...patch } }
+}
+
+function rollupLead(
+  nodes: Record<string, AgentNodeRuntime>,
+  leadId: string,
+  updatedAt: string,
+): Record<string, AgentNodeRuntime> {
+  const children = Object.values(NODE_BY_ID).filter((n) => n.leadId === leadId)
+  const required = children.filter((n) => !OPTIONAL_SUBAGENTS.has(n.id))
+  if (required.length === 0) return nodes
+
+  let anyFailed = false
+  for (const child of required) {
+    const st = nodes[child.id]?.status ?? 'pending'
+    if (st === 'pending' || st === 'running') return nodes
+    if (st === 'failed') anyFailed = true
+  }
+  // Optional child that actually ran and failed still fails the lead.
+  for (const child of children) {
+    if (OPTIONAL_SUBAGENTS.has(child.id) && nodes[child.id]?.status === 'failed') anyFailed = true
+  }
+
+  const leadStatus = nodes[leadId]?.status
+  if (leadStatus === 'completed' || leadStatus === 'failed') return nodes
+  return patchAgentNode(nodes, leadId, {
+    status: anyFailed ? 'failed' : 'completed',
+    updatedAt,
+  })
 }
 
 function applyGraphFromEvent(state: SessionState, event: EventEnvelope): SessionState {
@@ -174,8 +226,6 @@ function applyGraphFromEvent(state: SessionState, event: EventEnvelope): Session
   // Bubble status to parent lead when a subagent runs/completes/fails.
   const def = NODE_BY_ID[nodeId]
   if (def?.leadId) {
-    const leadStatus =
-      status === 'running' ? 'running' : status === 'failed' ? 'failed' : agentNodes[def.leadId]?.status
     if (status === 'running') {
       agentNodes = patchAgentNode(agentNodes, def.leadId, {
         status: 'running',
@@ -187,29 +237,75 @@ function applyGraphFromEvent(state: SessionState, event: EventEnvelope): Session
         status: 'failed',
         updatedAt: event.timestamp,
       })
-    } else if (status === 'completed' && leadStatus === 'running') {
-      // Keep lead running until its own completed event; no-op here.
+    } else if (status === 'completed') {
+      agentNodes = rollupLead(agentNodes, def.leadId, event.timestamp)
     }
   }
 
   const retry =
     typeof event.payload.retry_count === 'number' ? event.payload.retry_count : state.mlRetryCount
 
+  let activeNodeId = state.activeNodeId
+  if (status === 'running') {
+    activeNodeId = nodeId
+  } else if (state.activeNodeId === nodeId) {
+    activeNodeId = null
+  }
+
   return {
     ...state,
     agentNodes,
-    activeNodeId: status === 'running' ? nodeId : state.activeNodeId === nodeId ? nodeId : state.activeNodeId,
+    activeNodeId,
     mlRetryCount: nodeId === 'ml_engineer' || nodeId === 'error_repair' || def?.leadId === 'ml_engineer' ? retry : state.mlRetryCount,
     lastCorrelationId: event.correlation_id,
   }
 }
 
+function pushTrace(state: SessionState, event: EventEnvelope): EventEnvelope[] {
+  const prev = Array.isArray(state.traceEvents) ? state.traceEvents : []
+  const keepActivity =
+    event.type === 'activity' &&
+    (event.payload?.kind === 'self_heal' || event.payload?.kind === 'experiment_context')
+  const keep =
+    event.type === 'agent_started' ||
+    event.type === 'agent_completed' ||
+    event.type === 'trial_started' ||
+    event.type === 'trial_completed' ||
+    event.type === 'trial_failed' ||
+    event.type === 'verdict_issued' ||
+    keepActivity
+  if (!keep) return prev
+  const stamped: EventEnvelope = {
+    ...event,
+    payload: {
+      ...event.payload,
+      experiment_id:
+        event.payload.experiment_id ??
+        state.activeExperimentId ??
+        (event.payload.subagent === 'data_profiler' ||
+        event.payload.subagent === 'leakage_auditor' ||
+        event.payload.subagent === 'feature_analyst'
+          ? '__setup__'
+          : event.payload.experiment_id),
+    },
+  }
+  return [...prev, stamped].slice(-500)
+}
+
 function reduceEvent(state: SessionState, event: EventEnvelope): SessionState {
   const mock = state.mock || event.mock
+  const payloadMode = event.payload?.mode
+  const replay =
+    state.replay ||
+    payloadMode === 'replay' ||
+    String(event.payload?.message ?? '').toLowerCase().includes('replay of a recorded')
   let next: SessionState = {
     ...state,
     mock,
+    replay,
+    mode: mock ? 'mock' : replay ? 'replay' : state.mode === 'mock' ? 'live' : state.mode,
     lastEventType: event.type,
+    traceEvents: pushTrace(state, event),
   }
 
   next = applyGraphFromEvent(next, event)
@@ -248,19 +344,21 @@ function reduceEvent(state: SessionState, event: EventEnvelope): SessionState {
     case 'agent_completed': {
       const who = event.source_agent || event.source_service
       const status = event.type === 'agent_started' ? 'started' : 'completed'
-      const summary = p.summary ? ` — ${String(p.summary)}` : ''
+      const summary =
+        p.summary && typeof p.summary === 'object'
+          ? ` — ${JSON.stringify(p.summary)}`
+          : p.summary
+            ? ` — ${String(p.summary)}`
+            : ''
       next = {
         ...next,
         activity: pushActivity(next, event, `${who} ${status}${summary}`),
+        activeExperimentId:
+          typeof p.experiment_id === 'string' && p.experiment_id !== '__setup__'
+            ? String(p.experiment_id)
+            : next.activeExperimentId,
       }
-      if (typeof p.experiment_id === 'string' && p.model_family) {
-        next = {
-          ...next,
-          experiments: upsertExperiment(next.experiments, String(p.experiment_id), {
-            modelFamily: String(p.model_family),
-          }),
-        }
-      }
+      // Do not create timeline rows from agent events alone — wait for trial_* / verdict.
       break
     }
     case 'tool_called':
@@ -276,9 +374,20 @@ function reduceEvent(state: SessionState, event: EventEnvelope): SessionState {
       break
     }
     case 'trial_started': {
-      const id = String(p.experiment_id ?? 'unknown')
+      const id =
+        typeof p.experiment_id === 'string' && p.experiment_id
+          ? String(p.experiment_id)
+          : next.activeExperimentId
+      if (!id) {
+        next = {
+          ...next,
+          activity: pushActivity(next, event, 'Trial started (awaiting experiment id)'),
+        }
+        break
+      }
       next = {
         ...next,
+        activeExperimentId: id,
         experiments: upsertExperiment(next.experiments, id, {
           status: 'running',
           modelFamily: p.model_family ? String(p.model_family) : undefined,
@@ -323,13 +432,14 @@ function reduceEvent(state: SessionState, event: EventEnvelope): SessionState {
         ...next,
         experiments: upsertExperiment(next.experiments, id, {
           status: 'failed',
+          modelFamily: p.model_family ? String(p.model_family) : undefined,
           retryCount: typeof p.retry_count === 'number' ? p.retry_count : undefined,
-          note: String(p.reason ?? p.note ?? 'failed'),
+          note: String(p.reason ?? p.error ?? p.note ?? 'failed'),
         }),
         activity: pushActivity(
           next,
           event,
-          `Trial ${id} failed: ${String(p.reason ?? 'error')}`,
+          `Trial ${id} failed: ${String(p.reason ?? p.error ?? 'error')}`,
         ),
       }
       break
@@ -352,19 +462,38 @@ function reduceEvent(state: SessionState, event: EventEnvelope): SessionState {
       break
     }
     case 'budget_update': {
+      const used =
+        typeof p.experiments_used === 'number'
+          ? p.experiments_used
+          : typeof p.experiment_count === 'number'
+            ? p.experiment_count
+            : next.experimentsUsed
+      const budget =
+        typeof p.budget === 'number'
+          ? p.budget
+          : typeof p.experiment_budget === 'number'
+            ? p.experiment_budget
+            : next.experimentBudget
+      const best =
+        typeof p.best_val_f1 === 'number'
+          ? p.best_val_f1
+          : typeof p.best_val_score === 'number'
+            ? p.best_val_score
+            : next.bestValScore
       next = {
         ...next,
-        experimentsUsed:
-          typeof p.experiments_used === 'number' ? p.experiments_used : next.experimentsUsed,
-        experimentBudget:
-          typeof p.budget === 'number' ? p.budget : next.experimentBudget,
-        bestValScore:
-          typeof p.best_val_f1 === 'number' ? p.best_val_f1 : next.bestValScore,
-        activity: pushActivity(
-          next,
-          event,
-          `Budget ${String(p.experiments_used)}/${String(p.budget)}`,
-        ),
+        experimentsUsed: used,
+        experimentBudget: budget,
+        bestValScore: best,
+        selfHealBudget:
+          typeof p.self_heal_budget === 'number' ? p.self_heal_budget : next.selfHealBudget,
+        mlRetryCount:
+          typeof p.self_heal_attempt === 'number'
+            ? p.self_heal_attempt
+            : typeof p.retry_count === 'number'
+              ? p.retry_count
+              : next.mlRetryCount,
+        activity: pushActivity(next, event, `Budget ${used}/${budget}`),
       }
       break
     }
@@ -403,9 +532,24 @@ function reduceEvent(state: SessionState, event: EventEnvelope): SessionState {
       break
     }
     case 'activity': {
+      const healAttempt =
+        typeof p.self_heal_attempt === 'number'
+          ? p.self_heal_attempt
+          : typeof p.retry_count === 'number'
+            ? p.retry_count
+            : null
       next = {
         ...next,
         status: p.done === true ? 'completed' : next.status,
+        selfHealBudget:
+          typeof p.self_heal_budget === 'number' ? p.self_heal_budget : next.selfHealBudget,
+        mlRetryCount: healAttempt != null && p.kind === 'self_heal' ? healAttempt : next.mlRetryCount,
+        experiments:
+          p.kind === 'self_heal' && typeof p.experiment_id === 'string'
+            ? upsertExperiment(next.experiments, String(p.experiment_id), {
+                retryCount: healAttempt ?? undefined,
+              })
+            : next.experiments,
         activity: pushActivity(next, event, String(p.message ?? 'activity')),
       }
       break

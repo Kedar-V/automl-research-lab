@@ -1,81 +1,82 @@
 # AutoML Research Lab
 
-A teaching demo for master's data-science students: multi-agent AutoML with LangGraph, a sealed holdout, and microservices that talk only over HTTP and Redis Streams.
+Teaching demo for multi-agent AutoML: LangGraph orchestrator, sealed holdout, microservices over HTTP. UI runs on live SSE when `MOCK_*=false`.
 
-**Current stage: B2 — live agent graph.** Setup + Control Center + React Flow graph driven by mock SSE (`mock: true` banner). Static architecture diagrams arrive in B3. Real experiments start in Phase C.
+Design canvas: [`AutoML_Research_Lab_demo_canvas.pdf`](AutoML_Research_Lab_demo_canvas.pdf)  
+Build plan: [`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md) · Mock demo: [`docs/DEMO_SCRIPT.md`](docs/DEMO_SCRIPT.md)
 
-Design canvas: [`AutoML_Research_Lab_demo_canvas.pdf`](AutoML_Research_Lab_demo_canvas.pdf)
-
-## Quick start
+## Student path (< 10 minutes)
 
 ```bash
 cp .env.example .env
-make install          # creates .venv and installs contracts + pytest
-make up               # docker compose build + start
-make health           # curl each /healthz
-make test             # contract + mock SSE tests
-make demo-sse         # stream happy-path fixture (or SCENARIO=revise_loop)
+# Optional: set CURSOR_API_KEY + WANDB_API_KEY in .env (Composer 2.5 / W&B).
+# Without them, agents use deterministic fallbacks; W&B mirroring stays off if WANDB_ENABLED=false.
 
-# UI (Stage B1) — separate terminal
+make install
+make up                 # rebuilds images + starts stack
+make health             # all /healthz should return ok, mock:false
+
 cd frontend && npm install && npm run dev
 # open http://127.0.0.1:5173
 ```
 
-### Mock SSE scenarios
+1. Upload `datasets/churn_sample.csv`, target `churned`, start a research session.
+2. Watch the live agent graph; mock banner should be **gone** when all `MOCK_*=false`.
+3. MLflow UI: http://127.0.0.1:5050 — each trial logged; holdout tagged `final`.
+
+Equal-budget baselines (after `make up`):
+
+```bash
+.venv/bin/python scripts/eval_baselines.py
+```
+
+Failure demo: `docker compose -f infra/docker-compose.yml stop harness` then start a session — typed error + bounded retry on the graph.
+
+### Mock fixtures (teaching)
+
+Set `MOCK_GATEWAY=true` (and other mocks as needed) to replay fixtures without training:
 
 | Scenario | What you see |
 | --- | --- |
 | `happy` | Profile → experiment → accept → holdout → stop |
-| `revise_loop` | Judge revises once, loop-back to Hypothesis Generator |
-| `repair` | Invalid config → one Error repair → retry succeeds |
-| `terminal_failure` | Repair exhausted → failed trial → supervisor skips |
-| `budget_stop` | Stops at budget without hitting target score |
-| `service_down` | Harness typed error → bounded retry → terminal failure |
+| `revise_loop` | Judge revises once |
+| `repair` | Invalid config → one Error repair → retry |
+| `terminal_failure` / `budget_stop` / `service_down` | Bounded failure modes |
 
 ```bash
-# Manual curl
-SID=$(curl -sf -X POST http://127.0.0.1:8000/sessions \
-  -H 'Content-Type: application/json' \
-  -d '{"target_column":"churned","scenario":"revise_loop"}' | jq -r .session_id)
-curl -N "http://127.0.0.1:8000/sessions/$SID/events"
+make demo-sse SCENARIO=happy
 ```
 
-Pause / resume / reset: `POST /sessions/{id}/pause|resume|reset`.
+### Ports
 
-### Local ports
-
-| Service | Port |
+| Service | Host port |
 | --- | --- |
 | gateway | 8000 |
-| orchestrator | 8011 (container still listens on 8001) |
+| orchestrator | 8011 |
 | agent_service | 8002 |
 | harness | 8003 |
 | dataset_service | 8004 |
 | memory_service | 8005 |
 | tracking_service | 8006 |
-| MLflow UI | 5050 (container still listens on 5000) |
+| MLflow | 5050 |
 
-`wandb-mcp` is not started by default. Use `docker compose -f infra/docker-compose.yml --profile wandb up` when you have `WANDB_API_KEY`.
+`wandb-mcp`: `docker compose -f infra/docker-compose.yml --profile wandb up` when `WANDB_API_KEY` is set.
 
-## Build plan (stop after each stage)
-
-Full checklist and remaining-stage specs: **[`docs/BUILD_PLAN.md`](docs/BUILD_PLAN.md)** (source of truth).
-
-| Stage | Status |
-| --- | --- |
-| A0 contracts + skeletons | Done |
-| A1 mock SSE backend | Done |
-| B1 Setup + Control Center | Done |
-| B2 live React Flow agent graph | Done (current UI) |
-| **B3 static diagrams + `DEMO_SCRIPT.md`** | **Next** |
-| C1–C7 real services one-by-one | Pending |
-| D1 demo polish | Pending |
-
-Also: [`docs/architecture.md`](docs/architecture.md) · [`docs/services.md`](docs/services.md) · [`docs/planned-features.md`](docs/planned-features.md)
-
-## Hard rules (never break)
+## Hard rules
 
 1. No model-written code is executed.
-2. Sealed holdout is opened once, at the end, only via harness → dataset-service.
-3. Services do not import each other's code or databases.
-4. Mock data always carries `mock: true` and a visible UI banner (Phase B+).
+2. Sealed holdout opened once via harness → dataset-service `/internal/holdout/evaluate`.
+3. No cross-service DB reads; every limit lives in harness `policy.py`.
+4. `WANDB_API_KEY` / `CURSOR_API_KEY` never appear in events, logs, or UI.
+
+## Modes (Setup page)
+
+| Mode | Banner | Source |
+| --- | --- | --- |
+| **Live research** | none | Real dataset → orchestrator → harness; events also `XADD` to Redis Streams |
+| **Replay** | “Replay of a recorded real run” | `mocks/recordings/real_run_churn.json` |
+| **Mock fixture** | MOCK BACKEND | `mocks/fixtures/*` scenarios |
+
+## Stages
+
+A0–D1 **done**. Extension ideas (not built): [`docs/planned-features.md`](docs/planned-features.md).
