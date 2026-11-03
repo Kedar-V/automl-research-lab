@@ -2,8 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   listSimpleLoopDatasets,
+  listSimpleLoopRuns,
   uploadSimpleLoopDataset,
   type SimpleLoopDataset,
+  type SimpleLoopRunRecord,
 } from '../api/gateway'
 import { BestVsPrevious } from '../components/BestVsPrevious'
 import { BudgetPanel } from '../components/BudgetPanel'
@@ -16,6 +18,7 @@ import {
 import { ScoreChart } from '../components/ScoreChart'
 import { SelfHealPanel } from '../components/SelfHealPanel'
 import { SessionMeta } from '../components/SessionMeta'
+import { SimpleLoopRunHistory } from '../components/SimpleLoopRunHistory'
 import { GRAPH_NODE_TO_VISUAL } from '../graph/simpleLoopConfig'
 import { guessTargetColumn, sniffCsvHeaders } from '../lib/csvHeaders'
 import { initialSessionState } from '../state/sessionReducer'
@@ -132,9 +135,22 @@ export function SimpleLoopPage() {
   const [liveCycle, setLiveCycle] = useState(0)
   const [stopReason, setStopReason] = useState<string | null>(null)
   const [holdoutScore, setHoldoutScore] = useState<number | null>(null)
+  const [runHistory, setRunHistory] = useState<SimpleLoopRunRecord[]>([])
+  const [historyLoading, setHistoryLoading] = useState(false)
   const sourceRef = useRef<EventSource | null>(null)
   const runningRef = useRef(false)
   const cycleRef = useRef(0)
+
+  const refreshHistory = useCallback(async () => {
+    setHistoryLoading(true)
+    try {
+      setRunHistory(await listSimpleLoopRuns())
+    } catch {
+      // Non-fatal — panel stays empty / stale
+    } finally {
+      setHistoryLoading(false)
+    }
+  }, [])
 
   const applyDataset = useCallback((ds: SimpleLoopDataset) => {
     setDatasetFilename(ds.filename)
@@ -163,10 +179,11 @@ export function SimpleLoopPage() {
         }
       }
     })()
+    void refreshHistory()
     return () => {
       cancelled = true
     }
-  }, [applyDataset])
+  }, [applyDataset, refreshHistory])
 
   const resetRuntime = useCallback(() => {
     setRuntime({})
@@ -392,12 +409,14 @@ export function SimpleLoopPage() {
           }
         }
         finish()
+        void refreshHistory()
         return
       }
 
       if (ev.type === 'error') {
         setError(ev.message || 'simple-loop stream error')
         finish()
+        void refreshHistory()
       }
     }
 
@@ -424,6 +443,7 @@ export function SimpleLoopPage() {
     datasetFilename,
     datasetPath,
     maxCycles,
+    refreshHistory,
     resetRuntime,
     targetColumn,
     targetScore,
@@ -635,6 +655,11 @@ export function SimpleLoopPage() {
           />
           <BestVsPrevious experiments={experiments} />
           <BudgetPanel state={panelState} />
+          <SimpleLoopRunHistory
+            runs={runHistory}
+            loading={historyLoading}
+            onRefresh={() => void refreshHistory()}
+          />
         </div>
       </div>
 

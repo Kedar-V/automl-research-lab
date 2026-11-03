@@ -65,6 +65,7 @@ services:
       BUNDLED_CSV: /bundled/churn_sample.csv
       DATASETS_DIR: /bundled
       PROJECT_DATA_DIR: /data/projects
+      SIMPLE_LOOP_RUNS_PATH: /data/simple_loop/runs.json
       MINI_LOOP_ROOT: /mini_loop
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-xingchen-agi/xing4.0-29b-a4b:free}
@@ -74,6 +75,7 @@ services:
       - ../mini_loop:/mini_loop
       - ../mocks/recordings:/app/mocks/recordings:ro
       - project_data:/data/projects
+      - simple_loop_data:/data/simple_loop
     depends_on:
       redis:
         condition: service_healthy
@@ -383,4 +385,5 @@ volumes:
   dataset_data:
   harness_artifacts:
   project_data:
+  simple_loop_data:
   airflow_db:

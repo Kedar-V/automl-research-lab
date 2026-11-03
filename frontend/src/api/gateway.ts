@@ -211,6 +211,34 @@ export async function uploadSimpleLoopDataset(file: File): Promise<SimpleLoopDat
   return json(await fetch(`${BASE}/simple-loop/dataset`, { method: 'POST', body: form }))
 }
 
+export interface SimpleLoopRunRecord {
+  run_id: string
+  created_at: string
+  status: 'completed' | 'error' | string
+  dataset: string | null
+  target_column: string | null
+  target_score: number | null
+  max_cycles: number | null
+  cycles: number | null
+  best_val_f1: number | null
+  holdout_f1: number | null
+  stop_reason: string | null
+  model: string | null
+  verdict_action: string | null
+  error: string | null
+}
+
+export async function listSimpleLoopRuns(limit = 50): Promise<SimpleLoopRunRecord[]> {
+  const body = await json<{ runs: SimpleLoopRunRecord[] }>(
+    await fetch(`${BASE}/simple-loop/runs?limit=${limit}`),
+  )
+  return body.runs ?? []
+}
+
+export async function getSimpleLoopRun(runId: string): Promise<SimpleLoopRunRecord> {
+  return json(await fetch(`${BASE}/simple-loop/runs/${encodeURIComponent(runId)}`))
+}
+
 export async function pauseSession(sessionId: string) {
   return json(await fetch(`${BASE}/sessions/${sessionId}/pause`, { method: 'POST' }))
 }

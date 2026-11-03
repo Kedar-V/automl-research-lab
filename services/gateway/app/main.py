@@ -36,6 +36,7 @@ from services.gateway.app.live_sessions import live_store  # noqa: E402
 from services.gateway.app.project_store import project_store  # noqa: E402
 from services.gateway.app.replay import list_recordings, replay_store  # noqa: E402
 from services.gateway.app.redis_bus import bus, bus_status  # noqa: E402
+from services.gateway.app.simple_loop_runs import simple_loop_run_store  # noqa: E402
 
 SERVICE_NAME = "gateway"
 # Env default for health; per-session mode comes from CreateSessionRequest.
@@ -814,10 +815,59 @@ def _import_simple_loop():
     return mini_graph
 
 
+def _simple_loop_dataset_label(dataset_abs: str, requested: str | None) -> str:
+    if requested and str(requested).strip():
+        return Path(str(requested).strip()).name
+    return Path(dataset_abs).name
+
+
+def _record_simple_loop_run(
+    *,
+    dataset_label: str,
+    target_column: str,
+    target_score: float,
+    max_cycles: int,
+    result: dict | None = None,
+    error: str | None = None,
+) -> dict:
+    holdout = (result or {}).get("holdout_metrics") or {}
+    verdict = (result or {}).get("verdict") or {}
+    return simple_loop_run_store.append(
+        {
+            "status": "error" if error else "completed",
+            "dataset": dataset_label,
+            "target_column": target_column,
+            "target_score": target_score,
+            "max_cycles": max_cycles,
+            "cycles": (result or {}).get("cycles"),
+            "best_val_f1": (result or {}).get("best_val_f1"),
+            "holdout_f1": holdout.get("f1") if isinstance(holdout, dict) else None,
+            "stop_reason": (result or {}).get("stop_reason"),
+            "model": os.getenv("OPENROUTER_MODEL", "xingchen-agi/xing4.0-29b-a4b:free"),
+            "verdict_action": verdict.get("action") if isinstance(verdict, dict) else None,
+            "error": error,
+        }
+    )
+
+
+@app.get("/simple-loop/runs")
+def simple_loop_list_runs(limit: int = Query(default=50, ge=1, le=50)) -> dict:
+    return {"runs": simple_loop_run_store.list_runs(limit=limit)}
+
+
+@app.get("/simple-loop/runs/{run_id}")
+def simple_loop_get_run(run_id: str) -> dict:
+    row = simple_loop_run_store.get(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"run not found: {run_id}")
+    return row
+
+
 @app.post("/simple-loop/run")
 async def simple_loop_run(body: SimpleLoopRequest) -> JSONResponse:
     """Run the teaching LangGraph (each node = isolated Python script)."""
     dataset = _resolve_simple_loop_dataset(body.dataset_path)
+    label = _simple_loop_dataset_label(dataset, body.dataset_path)
     mini_graph = _import_simple_loop()
     try:
         result = mini_graph.run_simple_loop(
@@ -828,7 +878,21 @@ async def simple_loop_run(body: SimpleLoopRequest) -> JSONResponse:
             seed=body.seed,
         )
     except Exception as exc:  # noqa: BLE001
+        _record_simple_loop_run(
+            dataset_label=label,
+            target_column=body.target_column,
+            target_score=body.target_score,
+            max_cycles=body.max_cycles,
+            error=str(exc),
+        )
         raise HTTPException(status_code=500, detail=f"simple-loop failed: {exc}") from exc
+    _record_simple_loop_run(
+        dataset_label=label,
+        target_column=body.target_column,
+        target_score=body.target_score,
+        max_cycles=body.max_cycles,
+        result=result if isinstance(result, dict) else {},
+    )
     return JSONResponse(result)
 
 
@@ -842,9 +906,11 @@ async def simple_loop_stream(
 ) -> StreamingResponse:
     """SSE stream of LangGraph node events for the live simple-loop UI."""
     dataset = _resolve_simple_loop_dataset(dataset_path)
+    label = _simple_loop_dataset_label(dataset, dataset_path)
     mini_graph = _import_simple_loop()
 
     def event_stream():
+        saved = False
         try:
             for ev in mini_graph.stream_simple_loop(
                 dataset_path=dataset,
@@ -854,9 +920,36 @@ async def simple_loop_stream(
                 seed=seed,
             ):
                 etype = str(ev.get("type") or "message")
+                if etype == "run_completed" and not saved:
+                    result = ev.get("result") if isinstance(ev, dict) else None
+                    _record_simple_loop_run(
+                        dataset_label=label,
+                        target_column=target_column,
+                        target_score=target_score,
+                        max_cycles=max_cycles,
+                        result=result if isinstance(result, dict) else {},
+                    )
+                    saved = True
+                if etype == "error" and not saved:
+                    _record_simple_loop_run(
+                        dataset_label=label,
+                        target_column=target_column,
+                        target_score=target_score,
+                        max_cycles=max_cycles,
+                        error=str(ev.get("message") or "stream error"),
+                    )
+                    saved = True
                 yield f"event: {etype}\n"
                 yield f"data: {json.dumps(ev, default=str)}\n\n"
         except Exception as exc:  # noqa: BLE001
+            if not saved:
+                _record_simple_loop_run(
+                    dataset_label=label,
+                    target_column=target_column,
+                    target_score=target_score,
+                    max_cycles=max_cycles,
+                    error=str(exc),
+                )
             err = {"type": "error", "message": str(exc)}
             yield "event: error\n"
             yield f"data: {json.dumps(err)}\n\n"
