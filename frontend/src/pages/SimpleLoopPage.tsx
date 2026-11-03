@@ -1,5 +1,10 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
+import {
+  listSimpleLoopDatasets,
+  uploadSimpleLoopDataset,
+  type SimpleLoopDataset,
+} from '../api/gateway'
 import { BestVsPrevious } from '../components/BestVsPrevious'
 import { BudgetPanel } from '../components/BudgetPanel'
 import { ExperimentTimeline } from '../components/ExperimentTimeline'
@@ -12,6 +17,7 @@ import { ScoreChart } from '../components/ScoreChart'
 import { SelfHealPanel } from '../components/SelfHealPanel'
 import { SessionMeta } from '../components/SessionMeta'
 import { GRAPH_NODE_TO_VISUAL } from '../graph/simpleLoopConfig'
+import { guessTargetColumn, sniffCsvHeaders } from '../lib/csvHeaders'
 import { initialSessionState } from '../state/sessionReducer'
 import type { EventEnvelope, ExperimentEntry, SessionState } from '../types/events'
 
@@ -51,12 +57,12 @@ type StreamEvent = {
   step?: Step
   cycle?: number
   best_val_f1?: number
+  dataset_path?: string
+  target_column?: string
   verdict?: { action?: string; observation?: string }
   result?: RunResult
 }
 
-const DATASET = 'Titanic-Dataset.csv'
-const TARGET = 'Survived'
 const METRIC = 'f1'
 const STRATEGY = 'model_search' as const
 const TRAIN_TIMEOUT = 120
@@ -112,6 +118,12 @@ export function SimpleLoopPage() {
   const [result, setResult] = useState<RunResult | null>(null)
   const [targetScore, setTargetScore] = useState(0.8)
   const [maxCycles, setMaxCycles] = useState(3)
+  const [catalog, setCatalog] = useState<SimpleLoopDataset[]>([])
+  const [datasetFilename, setDatasetFilename] = useState('')
+  const [datasetPath, setDatasetPath] = useState<string | null>(null)
+  const [columns, setColumns] = useState<string[]>([])
+  const [targetColumn, setTargetColumn] = useState('')
+  const [uploading, setUploading] = useState(false)
   const [runtime, setRuntime] = useState<SimpleLoopRuntime>({})
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null)
   const [experiments, setExperiments] = useState<ExperimentEntry[]>([])
@@ -123,6 +135,38 @@ export function SimpleLoopPage() {
   const sourceRef = useRef<EventSource | null>(null)
   const runningRef = useRef(false)
   const cycleRef = useRef(0)
+
+  const applyDataset = useCallback((ds: SimpleLoopDataset) => {
+    setDatasetFilename(ds.filename)
+    setDatasetPath(ds.path ?? ds.filename)
+    setColumns(ds.columns ?? [])
+    setTargetColumn((prev) =>
+      prev && (ds.columns ?? []).includes(prev)
+        ? prev
+        : guessTargetColumn(ds.columns ?? []),
+    )
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const rows = await listSimpleLoopDatasets()
+        if (cancelled) return
+        setCatalog(rows)
+        if (rows.length > 0) {
+          applyDataset(rows[0])
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : 'Failed to load dataset catalog')
+        }
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [applyDataset])
 
   const resetRuntime = useCallback(() => {
     setRuntime({})
@@ -138,14 +182,64 @@ export function SimpleLoopPage() {
     cycleRef.current = 0
   }, [])
 
+  const onPickCatalog = useCallback(
+    (filename: string) => {
+      const row = catalog.find((d) => d.filename === filename)
+      if (row) applyDataset(row)
+    },
+    [applyDataset, catalog],
+  )
+
+  const onUpload = useCallback(
+    async (file: File | null) => {
+      if (!file) return
+      if (!file.name.toLowerCase().endsWith('.csv')) {
+        setError('Please upload a .csv file')
+        return
+      }
+      setUploading(true)
+      setError(null)
+      try {
+        // Prefer server staging (path the gateway can read); also sniff locally for snappy UX.
+        const localCols = sniffCsvHeaders(await file.text())
+        const uploaded = await uploadSimpleLoopDataset(file)
+        const ds: SimpleLoopDataset = {
+          ...uploaded,
+          columns: uploaded.columns?.length ? uploaded.columns : localCols,
+        }
+        setCatalog((prev) => {
+          const without = prev.filter((d) => d.filename !== ds.filename)
+          return [ds, ...without]
+        })
+        applyDataset(ds)
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Upload failed')
+      } finally {
+        setUploading(false)
+      }
+    },
+    [applyDataset],
+  )
+
   const onRun = useCallback(() => {
+    if (!datasetFilename && !datasetPath) {
+      setError('Choose or upload a CSV first')
+      return
+    }
+    if (!targetColumn.trim()) {
+      setError('Pick a target column')
+      return
+    }
+
     sourceRef.current?.close()
     resetRuntime()
     setBusy(true)
     runningRef.current = true
 
+    const datasetRef = datasetFilename || datasetPath || ''
     const params = new URLSearchParams({
-      target_column: TARGET,
+      dataset_path: datasetRef,
+      target_column: targetColumn.trim(),
       target_score: String(targetScore),
       max_cycles: String(maxCycles),
     })
@@ -160,6 +254,8 @@ export function SimpleLoopPage() {
       if (sourceRef.current === source) sourceRef.current = null
     }
 
+    const datasetNote = datasetFilename || datasetRef
+
     const handle = (msg: MessageEvent<string>) => {
       let ev: StreamEvent
       try {
@@ -169,9 +265,7 @@ export function SimpleLoopPage() {
       }
 
       if (ev.type === 'run_started') {
-        setRuntime((prev) =>
-          setStatus(prev, 'dataset', 'completed', 'Titanic-Dataset.csv'),
-        )
+        setRuntime((prev) => setStatus(prev, 'dataset', 'completed', datasetNote))
         return
       }
 
@@ -181,7 +275,7 @@ export function SimpleLoopPage() {
         setRuntime((prev) => {
           let next = setStatus(prev, visual, 'running')
           if (ev.node === 'data_scientist') {
-            next = setStatus(next, 'dataset', 'completed', 'Titanic-Dataset.csv')
+            next = setStatus(next, 'dataset', 'completed', datasetNote)
           }
           return next
         })
@@ -326,7 +420,16 @@ export function SimpleLoopPage() {
         if (sourceRef.current === source) sourceRef.current = null
       }
     }
-  }, [maxCycles, resetRuntime, targetScore])
+  }, [
+    datasetFilename,
+    datasetPath,
+    maxCycles,
+    resetRuntime,
+    targetColumn,
+    targetScore,
+  ])
+
+  const canRun = Boolean(datasetFilename && targetColumn.trim()) && !busy && !uploading
 
   const panelState: SessionState = useMemo(
     () =>
@@ -334,8 +437,8 @@ export function SimpleLoopPage() {
         sessionId: 'simple-loop',
         status: busy ? 'running' : result ? 'completed' : error ? 'error' : 'idle',
         mode: 'live',
-        dataset: DATASET,
-        targetColumn: TARGET,
+        dataset: datasetFilename || '—',
+        targetColumn: targetColumn || '—',
         metric: METRIC,
         targetScore,
         experimentBudget: maxCycles,
@@ -354,6 +457,8 @@ export function SimpleLoopPage() {
       busy,
       result,
       error,
+      datasetFilename,
+      targetColumn,
       targetScore,
       maxCycles,
       experiments,
@@ -385,7 +490,7 @@ export function SimpleLoopPage() {
               Simple research loop
             </h1>
             <p className="mt-1 text-sm text-mist">
-              LangGraph mini-loop · Titanic · live SSE
+              LangGraph mini-loop · any CSV · live SSE
               {liveCycle > 0 ? ` · cycle ${liveCycle}` : ''}
             </p>
           </div>
@@ -393,7 +498,7 @@ export function SimpleLoopPage() {
 
         <div className="flex flex-wrap items-center gap-2">
           <label className="flex items-center gap-2 text-sm text-mist">
-            Target
+            Target score
             <input
               type="number"
               step="0.01"
@@ -430,11 +535,11 @@ export function SimpleLoopPage() {
           </span>
           <button
             type="button"
-            disabled={busy}
+            disabled={!canRun}
             onClick={onRun}
             className="rounded border border-teal bg-teal px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
           >
-            {busy ? 'Running…' : 'Run on Titanic'}
+            {busy ? 'Running…' : 'Run loop'}
           </button>
           {(result || error) && (
             <button
@@ -449,6 +554,60 @@ export function SimpleLoopPage() {
         </div>
       </header>
 
+      <div className="flex flex-wrap items-end gap-4 border-b border-line px-6 py-3">
+        <label className="text-sm">
+          <span className="font-mono text-[10px] uppercase tracking-wider text-mist">Dataset</span>
+          <select
+            value={datasetFilename}
+            onChange={(e) => onPickCatalog(e.target.value)}
+            disabled={busy || uploading}
+            className="mt-1 block min-w-[14rem] border border-line bg-ink-2 px-3 py-2 font-mono text-sm text-paper"
+          >
+            {catalog.length === 0 && <option value="">No CSVs yet — upload one</option>}
+            {catalog.map((d) => (
+              <option key={d.filename} value={d.filename}>
+                {d.filename}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-sm">
+          <span className="font-mono text-[10px] uppercase tracking-wider text-mist">
+            Target column
+          </span>
+          <select
+            value={targetColumn}
+            onChange={(e) => setTargetColumn(e.target.value)}
+            disabled={busy || uploading || columns.length === 0}
+            className="mt-1 block min-w-[12rem] border border-line bg-ink-2 px-3 py-2 font-mono text-sm text-paper"
+          >
+            {columns.length === 0 && <option value="">—</option>}
+            {columns.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="text-sm">
+          <span className="font-mono text-[10px] uppercase tracking-wider text-mist">
+            Upload CSV
+          </span>
+          <input
+            type="file"
+            accept=".csv,text/csv"
+            disabled={busy || uploading}
+            onChange={(e) => {
+              const f = e.target.files?.[0] ?? null
+              void onUpload(f)
+              e.target.value = ''
+            }}
+            className="mt-1 block max-w-[16rem] text-sm text-mist file:mr-3 file:border file:border-line file:bg-panel file:px-3 file:py-1.5 file:text-sm file:text-paper"
+          />
+        </label>
+        {uploading && <p className="pb-2 text-sm text-teal">Uploading…</p>}
+      </div>
+
       <SessionMeta state={panelState} />
 
       {error && (
@@ -459,7 +618,12 @@ export function SimpleLoopPage() {
 
       <div className="mx-auto grid w-full max-w-[1400px] flex-1 gap-6 px-4 py-6 lg:grid-cols-[1.1fr_0.9fr]">
         <div className="flex min-h-0 flex-col gap-6">
-          <LiveSimpleLoopGraph runtime={runtime} activeNodeId={activeNodeId} />
+          <LiveSimpleLoopGraph
+            runtime={runtime}
+            activeNodeId={activeNodeId}
+            datasetLabel={datasetFilename || null}
+            targetColumn={targetColumn || null}
+          />
           <ExperimentTimeline experiments={experiments} traceEvents={traceEvents} />
         </div>
         <div className="flex min-h-0 flex-col gap-6">

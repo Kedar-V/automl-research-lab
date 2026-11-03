@@ -36,8 +36,8 @@ export interface SimpleLoopEdge {
 export const SIMPLE_LOOP_NODES: SimpleLoopNode[] = [
   {
     id: 'dataset',
-    title: 'Titanic-Dataset.csv',
-    role: 'Input table · Survived target',
+    title: 'dataset.csv',
+    role: 'Input table · choose target',
     kind: 'file',
     service: 'dataset file',
   },

@@ -15,7 +15,8 @@ MEMORY_PATH = ROOT / "memory" / "research_memory.json"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = os.getenv(
     "OPENROUTER_MODEL",
-    "nvidia/nemotron-3.5-lightning:free",
+    # Xing4.0 currently answers when the shared free-daily pool is exhausted.
+    "xingchen-agi/xing4.0-29b-a4b:free",
 )
 
 
@@ -43,12 +44,12 @@ def openrouter_chat(
     temperature: float = 0.2,
     retries: int = 2,
 ) -> tuple[str | None, str | None]:
-    """Live OpenRouter chat. Nemotron reasoning is disabled so JSON lands in content."""
+    """Live OpenRouter chat. Prefer JSON in content; disable reasoning when allowed."""
     key = os.getenv("OPENROUTER_API_KEY", "").strip()
     if not key:
         return None, "OPENROUTER_API_KEY not set"
     model = os.getenv("OPENROUTER_MODEL", DEFAULT_MODEL)
-    body = {
+    body: dict[str, Any] = {
         "model": model,
         "messages": [
             {"role": "system", "content": system},
@@ -78,6 +79,13 @@ def openrouter_chat(
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")[:400]
             last_err = f"HTTP {exc.code}: {detail}"
+            # Some free endpoints require reasoning — drop the disable and retry.
+            if (
+                exc.code == 400
+                and "reasoning is mandatory" in detail.lower()
+                and "reasoning" in body
+            ):
+                body.pop("reasoning", None)
             continue
         except Exception as exc:  # noqa: BLE001
             last_err = str(exc)

@@ -191,6 +191,26 @@ export async function uploadSessionDataset(
   )
 }
 
+export interface SimpleLoopDataset {
+  filename: string
+  path?: string
+  columns: string[]
+  bytes?: number
+}
+
+export async function listSimpleLoopDatasets(): Promise<SimpleLoopDataset[]> {
+  const body = await json<{ datasets: SimpleLoopDataset[] }>(
+    await fetch(`${BASE}/simple-loop/datasets`),
+  )
+  return body.datasets ?? []
+}
+
+export async function uploadSimpleLoopDataset(file: File): Promise<SimpleLoopDataset> {
+  const form = new FormData()
+  form.append('file', file)
+  return json(await fetch(`${BASE}/simple-loop/dataset`, { method: 'POST', body: form }))
+}
+
 export async function pauseSession(sessionId: string) {
   return json(await fetch(`${BASE}/sessions/${sessionId}/pause`, { method: 'POST' }))
 }

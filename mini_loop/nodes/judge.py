@@ -85,7 +85,7 @@ def main() -> int:
                     or verdict.get("next_action"),
                 }
                 used_llm = True
-                note = "nemotron live verdict"
+                note = "openrouter live verdict"
             else:
                 note = f"llm unparsable; heuristic ({err or 'ok'})"
         else:

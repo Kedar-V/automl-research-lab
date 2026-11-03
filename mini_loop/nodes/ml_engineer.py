@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ML Engineer (code + optional LLM repair) — validate, train, score.
+"""ML Engineer (code + LLM self-heal) — validate, train, score, repair via Nemotron.
 
 stdin: {
   dataset_path, target_column, experiment_spec, holdout_frac?, seed?,
@@ -27,8 +27,8 @@ from sklearn.preprocessing import OneHotEncoder
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _common import (  # noqa: E402
-    llm_configured,
     extract_json_object,
+    llm_configured,
     openrouter_chat,
     read_json_stdin,
     write_json,
@@ -57,35 +57,88 @@ def _repair_heuristic(spec: dict, error: str) -> dict:
     fixed = dict(spec)
     fixed["hyperparameters"] = dict(spec.get("hyperparameters") or {})
     fam = fixed.get("model_family")
-    if fam not in ALLOWED:
+    err_l = error.lower()
+    # Sparse / dense mismatch → switch off HGB or force RF with simpler cats.
+    if "sparse" in err_l or "dense" in err_l:
         fixed["model_family"] = "random_forest"
-    if fam == "logistic_regression":
-        fixed["hyperparameters"] = {"C": 1.0, "max_iter": 400}
+        fixed["hyperparameters"] = {"n_estimators": 120, "max_depth": 8}
+    elif fam not in ALLOWED:
+        fixed["model_family"] = "random_forest"
+        fixed["hyperparameters"] = {"n_estimators": 100, "max_depth": 6}
+    elif fam == "logistic_regression":
+        fixed["hyperparameters"] = {"C": 1.0, "max_iter": 400, "class_weight": "balanced"}
     elif fam == "hist_gradient_boosting":
-        fixed["hyperparameters"] = {"learning_rate": 0.1, "max_iter": 100}
+        fixed["model_family"] = "random_forest"
+        fixed["hyperparameters"] = {"n_estimators": 100, "max_depth": 6}
     else:
         fixed["model_family"] = "random_forest"
         fixed["hyperparameters"] = {"n_estimators": 100, "max_depth": 6}
-    fixed["rationale"] = f"repaired after: {error[:120]}"
+    fixed["rationale"] = f"heuristic repaired after: {error[:120]}"
     return fixed
 
 
+def _llm_repair(spec: dict, error: str, *, columns: list[str], target: str) -> tuple[dict | None, str | None]:
+    """Ask Nemotron for a repaired ExperimentSpec. Returns (spec, err)."""
+    if not llm_configured():
+        return None, "OPENROUTER_API_KEY not set"
+    system = (
+        "You are the ML Engineer self-heal agent in a live AutoML loop. "
+        "A train/validate attempt failed. Return ONLY one JSON ExperimentSpec with keys: "
+        "experiment_id, model_family "
+        "(logistic_regression|random_forest|hist_gradient_boosting), "
+        "hyperparameters (object), drop_columns (string[] of existing columns to drop), "
+        "rationale (1-2 sentences explaining the fix). "
+        "Rules: "
+        "- If the error mentions sparse/dense arrays, prefer random_forest or "
+        "logistic_regression (hist_gradient_boosting cannot take sparse one-hot). "
+        "- Drop id-like / high-cardinality text columns that cause explosion or leakage. "
+        "- For severe class imbalance, set class_weight to balanced when the family supports it. "
+        "- Keep drop_columns subset of provided columns (never include the target). "
+        "- Change hyperparameters or family enough to actually address the error."
+    )
+    user = (
+        f"error={error}\n"
+        f"target={target}\n"
+        f"columns={columns}\n"
+        f"failed_spec={json.dumps(spec, default=str)}\n"
+    )
+    content, err = openrouter_chat(system, user, max_tokens=800, temperature=0.25)
+    if not content:
+        return None, err or "empty llm repair"
+    parsed = extract_json_object(content)
+    if not parsed or parsed.get("model_family") not in ALLOWED:
+        return None, f"llm repair unparsable ({err or 'bad json'})"
+    parsed.setdefault("experiment_id", spec.get("experiment_id"))
+    parsed.setdefault("hyperparameters", {})
+    drops = [c for c in (parsed.get("drop_columns") or []) if c in columns and c != target]
+    parsed["drop_columns"] = drops
+    return parsed, None
+
+
 def _build_model(family: str, hp: dict):
+    # Fraud-like targets are rare — default to balanced unless the spec overrides.
+    cw = hp.get("class_weight", "balanced")
     if family == "logistic_regression":
         return LogisticRegression(
             C=float(hp.get("C", 1.0)),
-            max_iter=int(hp.get("max_iter", 300)),
+            max_iter=int(hp.get("max_iter", 500)),
+            class_weight=cw,
         )
     if family == "hist_gradient_boosting":
         return HistGradientBoostingClassifier(
             learning_rate=float(hp.get("learning_rate", 0.1)),
             max_iter=int(hp.get("max_iter", 100)),
+            class_weight=cw if cw in (None, "balanced") else None,
         )
-    return RandomForestClassifier(
-        n_estimators=int(hp.get("n_estimators", 100)),
-        max_depth=hp.get("max_depth", 6),
-        random_state=42,
-    )
+    kw = {
+        "n_estimators": int(hp.get("n_estimators", 100)),
+        "max_depth": hp.get("max_depth", 6),
+        "class_weight": cw,
+        "random_state": 42,
+    }
+    if hp.get("min_samples_leaf") is not None:
+        kw["min_samples_leaf"] = int(hp.get("min_samples_leaf"))
+    return RandomForestClassifier(**kw)
 
 
 def _run_once(df: pd.DataFrame, target: str, spec: dict, seed: int, holdout_frac: float) -> dict:
@@ -102,7 +155,12 @@ def _run_once(df: pd.DataFrame, target: str, spec: dict, seed: int, holdout_frac
     )
 
     num_cols = [c for c in X_train.columns if pd.api.types.is_numeric_dtype(X_train[c])]
-    cat_cols = [c for c in X_train.columns if c not in num_cols]
+    cat_cols = [
+        c
+        for c in X_train.columns
+        if c not in num_cols and X_train[c].nunique(dropna=True) <= 40
+    ]
+    # Dense one-hot so hist_gradient_boosting (and mixed pipelines) never see sparse X.
     pre = ColumnTransformer(
         [
             ("num", SimpleImputer(strategy="median"), num_cols),
@@ -111,12 +169,16 @@ def _run_once(df: pd.DataFrame, target: str, spec: dict, seed: int, holdout_frac
                 Pipeline(
                     [
                         ("imp", SimpleImputer(strategy="most_frequent")),
-                        ("oh", OneHotEncoder(handle_unknown="ignore")),
+                        (
+                            "oh",
+                            OneHotEncoder(handle_unknown="ignore", sparse_output=False),
+                        ),
                     ]
                 ),
                 cat_cols,
             ),
-        ]
+        ],
+        sparse_threshold=0.0,
     )
     family = str(spec["model_family"])
     model = _build_model(family, dict(spec.get("hyperparameters") or {}))
@@ -132,17 +194,40 @@ def _run_once(df: pd.DataFrame, target: str, spec: dict, seed: int, holdout_frac
         "hyperparameters": spec.get("hyperparameters") or {},
         "drop_columns": drops,
         "validation_metrics": {
-            "f1": float(f1_score(y_val, pred, zero_division=0)),
+            "f1": float(f1_score(y_val, pred, average="binary", zero_division=0))
+            if y_val.nunique() <= 2
+            else float(f1_score(y_val, pred, average="macro", zero_division=0)),
             "accuracy": float(accuracy_score(y_val, pred)),
         },
         "duration_sec": round(duration, 3),
         "n_train": int(len(X_train)),
         "n_val": int(len(X_val)),
         "n_holdout": int(len(X_hold)),
-        # Pass sealed holdout sizes only — not rows. Actual holdout eval is separate node.
         "holdout_seed": seed,
         "holdout_frac": holdout_frac,
     }
+
+
+def _apply_repair(
+    spec: dict,
+    error: str,
+    *,
+    columns: list[str],
+    target: str,
+) -> tuple[dict, bool, str]:
+    """Prefer live Nemotron repair; fall back to heuristic only if LLM fails."""
+    repaired_spec, llm_err = _llm_repair(spec, error, columns=columns, target=target)
+    if repaired_spec is not None:
+        v = _validate(repaired_spec)
+        if v is None:
+            return repaired_spec, True, f"openrouter repair after: {error}"
+        # LLM returned invalid family/shape — try once more is overkill; fall through.
+        llm_err = v
+    fixed = _repair_heuristic(spec, error)
+    note = f"heuristic repair after: {error}"
+    if llm_err:
+        note = f"heuristic repair after LLM miss ({llm_err}): {error}"
+    return fixed, False, note
 
 
 def main() -> int:
@@ -152,41 +237,23 @@ def main() -> int:
     spec = dict(inp.get("experiment_spec") or {})
     seed = int(inp.get("seed") or 42)
     holdout_frac = float(inp.get("holdout_frac") or 0.2)
-    repair_budget = int(inp.get("repair_budget") or 1)
+    repair_budget = int(inp.get("repair_budget") or 3)
 
     df = pd.read_csv(path)
+    columns = list(df.columns)
     repaired = False
     used_llm_repair = False
     note = "ok"
+    last_error: str | None = None
 
+    # Spec validation repairs (count against budget).
     err = _validate(spec)
     attempts = 0
     while err and attempts < repair_budget:
         attempts += 1
-        # Prefer live Nemotron repair when configured.
-        repaired_this_round = False
-        if llm_configured():
-            system = (
-                "You are the ML Engineer self-heal agent. "
-                "Repair an invalid ExperimentSpec and return ONLY one JSON object with "
-                "model_family in logistic_regression|random_forest|hist_gradient_boosting, "
-                "hyperparameters (object), drop_columns (string[]), experiment_id, rationale. "
-                "Fix the reported validation error while keeping the experiment useful."
-            )
-            user = f"error={err}\nspec={json.dumps(spec, default=str)}\n"
-            content, _llm_err = openrouter_chat(system, user, max_tokens=700, temperature=0.2)
-            if content:
-                parsed = extract_json_object(content)
-                if parsed and parsed.get("model_family"):
-                    spec = parsed
-                    used_llm_repair = True
-                    repaired = True
-                    repaired_this_round = True
-                    note = f"nemotron repair after: {err}"
-        if not repaired_this_round:
-            spec = _repair_heuristic(spec, err)
-            repaired = True
-            note = f"heuristic repair after: {err}"
+        spec, used_llm, note = _apply_repair(spec, err, columns=columns, target=target)
+        repaired = True
+        used_llm_repair = used_llm_repair or used_llm
         err = _validate(spec)
 
     if err:
@@ -205,45 +272,39 @@ def main() -> int:
         )
         return 1
 
-    try:
-        result = _run_once(df, target, spec, seed, holdout_frac)
-    except Exception as exc:  # noqa: BLE001
-        if repair_budget > 0 and not repaired:
-            spec = _repair_heuristic(spec, str(exc))
-            repaired = True
-            note = f"heuristic repair after run error: {exc}"
-            try:
-                result = _run_once(df, target, spec, seed, holdout_frac)
-            except Exception as exc2:  # noqa: BLE001
+    result = None
+    while True:
+        try:
+            result = _run_once(df, target, spec, seed, holdout_frac)
+            break
+        except Exception as exc:  # noqa: BLE001
+            last_error = str(exc)
+            if attempts >= repair_budget:
                 write_json(
                     {
                         "execution_result": {
                             "status": "failed",
-                            "error": str(exc2),
+                            "error": last_error,
                             "validation_metrics": {},
                         },
                         "experiment_spec": spec,
                         "repaired": repaired,
                         "used_llm_repair": used_llm_repair,
-                        "note": note,
+                        "note": note if repaired else f"failed: {last_error}",
                     }
                 )
                 return 1
-        else:
-            write_json(
-                {
-                    "execution_result": {
-                        "status": "failed",
-                        "error": str(exc),
-                        "validation_metrics": {},
-                    },
-                    "experiment_spec": spec,
-                    "repaired": repaired,
-                    "used_llm_repair": used_llm_repair,
-                    "note": note,
-                }
+            attempts += 1
+            spec, used_llm, note = _apply_repair(
+                spec, last_error, columns=columns, target=target
             )
-            return 1
+            repaired = True
+            used_llm_repair = used_llm_repair or used_llm
+            # Re-validate after repair before retrying run.
+            v = _validate(spec)
+            if v:
+                spec, used_llm2, note = _apply_repair(spec, v, columns=columns, target=target)
+                used_llm_repair = used_llm_repair or used_llm2
 
     write_json(
         {

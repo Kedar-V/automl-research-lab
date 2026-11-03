@@ -652,10 +652,70 @@ if not MINI_LOOP_ROOT.exists():
 
 class SimpleLoopRequest(BaseModel):
     dataset_path: str | None = None
-    target_column: str = "Survived"
+    target_column: str
     target_score: float = 0.8
     max_cycles: int = 3
     seed: int = 42
+
+
+def _simple_loop_dataset_dirs() -> list[Path]:
+    dirs: list[Path] = []
+    for raw in (
+        os.getenv("DATASETS_DIR"),
+        "/bundled",
+        "/bundled/airflow",
+        str(ROOT / "datasets"),
+        str(ROOT / "datasets" / "airflow"),
+        str(MINI_LOOP_ROOT.parent / "datasets"),
+        str(MINI_LOOP_ROOT.parent / "datasets" / "airflow"),
+        "/tmp/simple_loop_uploads",
+    ):
+        if not raw:
+            continue
+        p = Path(raw)
+        if p.exists() and p.is_dir() and p not in dirs:
+            dirs.append(p)
+    return dirs
+
+
+def _sniff_csv_columns(path: Path, limit: int = 64) -> list[str]:
+    import csv
+
+    try:
+        with path.open(newline="", encoding="utf-8", errors="replace") as fh:
+            sample = fh.read(8192)
+            fh.seek(0)
+            try:
+                dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+            except csv.Error:
+                dialect = csv.excel
+            reader = csv.reader(fh, dialect)
+            row = next(reader, None) or []
+    except OSError:
+        return []
+    cols = [c.strip().strip('"') for c in row if str(c).strip()]
+    return cols[:limit]
+
+
+def _resolve_simple_loop_dataset(explicit: str | None) -> str:
+    """Resolve an absolute path or a filename from the datasets catalog. No Titanic assumption."""
+    if not explicit or not str(explicit).strip():
+        raise HTTPException(
+            status_code=400,
+            detail="dataset_path required — upload a CSV or pick one from the catalog",
+        )
+    raw = str(explicit).strip()
+    p = Path(raw)
+    if p.is_file():
+        return str(p.resolve())
+    name = Path(raw).name
+    if not name or name.startswith(".") or ".." in Path(raw).parts:
+        raise HTTPException(status_code=400, detail="invalid dataset name")
+    for d in _simple_loop_dataset_dirs():
+        cand = d / name
+        if cand.is_file():
+            return str(cand.resolve())
+    raise HTTPException(status_code=400, detail=f"dataset not found: {name}")
 
 
 @app.get("/simple-loop/info")
@@ -663,8 +723,7 @@ def simple_loop_info() -> dict:
     return {
         "root": str(MINI_LOOP_ROOT),
         "available": (MINI_LOOP_ROOT / "graph.py").exists(),
-        "default_dataset": "Titanic-Dataset.csv",
-        "default_target": "Survived",
+        "accepts": "any CSV with a target column",
         "nodes": [
             "data_scientist",
             "hypothesis_generator",
@@ -677,24 +736,69 @@ def simple_loop_info() -> dict:
         "router": "conditional edge accept|revise|reject",
         "llm": {
             "provider": "openrouter",
-            "model": os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3.5-lightning:free"),
+            "model": os.getenv("OPENROUTER_MODEL", "xingchen-agi/xing4.0-29b-a4b:free"),
             "key_configured": bool(os.getenv("OPENROUTER_API_KEY")),
         },
+        "datasets": [
+            {"filename": p.name, "columns": _sniff_csv_columns(p)}
+            for d in _simple_loop_dataset_dirs()
+            for p in sorted(d.glob("*.csv"))
+        ],
     }
 
 
-def _resolve_simple_loop_dataset(explicit: str | None) -> str:
-    if explicit and Path(explicit).exists():
-        return explicit
-    candidates = [
-        ROOT / "datasets" / "Titanic-Dataset.csv",
-        Path("/bundled/Titanic-Dataset.csv"),
-        MINI_LOOP_ROOT.parent / "datasets" / "Titanic-Dataset.csv",
-    ]
-    found = next((str(p) for p in candidates if p.exists()), None)
-    if not found:
-        raise HTTPException(status_code=400, detail="dataset_path required (Titanic default not found)")
-    return found
+@app.get("/simple-loop/datasets")
+def simple_loop_datasets() -> dict:
+    seen: set[str] = set()
+    items: list[dict] = []
+    for d in _simple_loop_dataset_dirs():
+        for p in sorted(d.glob("*.csv")):
+            if p.name in seen:
+                continue
+            seen.add(p.name)
+            items.append(
+                {
+                    "filename": p.name,
+                    "path": str(p.resolve()),
+                    "columns": _sniff_csv_columns(p),
+                    "bytes": p.stat().st_size,
+                }
+            )
+    return {"datasets": items}
+
+
+@app.post("/simple-loop/dataset")
+async def simple_loop_upload_dataset(file: UploadFile = File(...)) -> JSONResponse:
+    """Stage any CSV for the simple research loop (returns path + columns)."""
+    name = Path(file.filename or "upload.csv").name
+    if not name.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="only .csv uploads are supported")
+    if ".." in Path(name).parts:
+        raise HTTPException(status_code=400, detail="invalid filename")
+
+    dest_dirs = _simple_loop_dataset_dirs()
+    dest_root = next(
+        (d for d in dest_dirs if d.exists() and os.access(d, os.W_OK)),
+        None,
+    )
+    if dest_root is None:
+        dest_root = Path("/tmp/simple_loop_uploads")
+        dest_root.mkdir(parents=True, exist_ok=True)
+
+    dest = dest_root / name
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="empty file")
+    dest.write_bytes(raw)
+    cols = _sniff_csv_columns(dest)
+    return JSONResponse(
+        {
+            "filename": name,
+            "path": str(dest.resolve()),
+            "columns": cols,
+            "bytes": len(raw),
+        }
+    )
 
 
 def _import_simple_loop():
@@ -730,11 +834,11 @@ async def simple_loop_run(body: SimpleLoopRequest) -> JSONResponse:
 
 @app.get("/simple-loop/stream")
 async def simple_loop_stream(
-    target_column: str = Query(default="Survived"),
+    target_column: str = Query(..., min_length=1),
+    dataset_path: str = Query(..., min_length=1),
     target_score: float = Query(default=0.8),
     max_cycles: int = Query(default=3, ge=1, le=8),
     seed: int = Query(default=42),
-    dataset_path: str | None = Query(default=None),
 ) -> StreamingResponse:
     """SSE stream of LangGraph node events for the live simple-loop UI."""
     dataset = _resolve_simple_loop_dataset(dataset_path)

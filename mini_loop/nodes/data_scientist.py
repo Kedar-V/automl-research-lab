@@ -107,7 +107,7 @@ def main() -> int:
                     profile.get("leakage_suspects") or [],
                 )
                 used_llm = True
-                note = "nemotron live profile"
+                note = "openrouter live profile"
             else:
                 note = f"llm unparsable; heuristic ({err or 'ok'})"
         else:

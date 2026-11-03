@@ -124,7 +124,7 @@ def node_ml_engineer(state: SimpleLoopState) -> dict:
             "experiment_spec": state.get("experiment_spec") or {},
             "seed": state.get("seed", 42),
             "holdout_frac": state.get("holdout_frac", 0.2),
-            "repair_budget": 1,
+            "repair_budget": 3,
         },
         timeout=240,
     )

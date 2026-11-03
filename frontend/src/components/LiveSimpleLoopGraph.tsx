@@ -92,9 +92,13 @@ function initialNodes(): Node[] {
 function LiveSimpleLoopGraphInner({
   runtime,
   activeNodeId,
+  datasetLabel,
+  targetColumn,
 }: {
   runtime: SimpleLoopRuntime
   activeNodeId: string | null
+  datasetLabel?: string | null
+  targetColumn?: string | null
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [nodes, setNodes] = useState<Node[]>(initialNodes)
@@ -103,9 +107,16 @@ function LiveSimpleLoopGraphInner({
     return nodes.map((node) => {
       const meta = SIMPLE_LOOP_NODES.find((n) => n.id === node.id)
       const rt = runtime[node.id]
+      const isDataset = node.id === 'dataset'
       const data: SimpleLoopFlowNodeData = {
-        title: meta?.title ?? node.id,
-        role: meta?.role ?? '',
+        title: isDataset
+          ? datasetLabel?.trim() || meta?.title || 'dataset.csv'
+          : meta?.title ?? node.id,
+        role: isDataset
+          ? targetColumn?.trim()
+            ? `Input table · ${targetColumn} target`
+            : 'Input table · choose target'
+          : meta?.role ?? '',
         service: meta?.service ?? '',
         status: rt?.status ?? 'pending',
         kind: meta?.kind ?? 'code',
@@ -117,7 +128,7 @@ function LiveSimpleLoopGraphInner({
         draggable: true,
       }
     })
-  }, [nodes, runtime, selectedId])
+  }, [nodes, runtime, selectedId, datasetLabel, targetColumn])
 
   const onNodesChange: OnNodesChange = useCallback((changes: NodeChange[]) => {
     setNodes((prev) => applyNodeChanges(changes, prev))
@@ -152,8 +163,20 @@ function LiveSimpleLoopGraphInner({
     setSelectedId(node.id)
   }
 
-  const selected = SIMPLE_LOOP_NODES.find((n) => n.id === (selectedId as SimpleLoopNodeId))
+  const selectedMeta = SIMPLE_LOOP_NODES.find((n) => n.id === (selectedId as SimpleLoopNodeId))
   const selectedRt = selectedId ? runtime[selectedId] : undefined
+  const selected =
+    selectedMeta == null
+      ? null
+      : selectedMeta.id === 'dataset'
+        ? {
+            ...selectedMeta,
+            title: datasetLabel?.trim() || selectedMeta.title,
+            role: targetColumn?.trim()
+              ? `Input table · ${targetColumn} target`
+              : selectedMeta.role,
+          }
+        : selectedMeta
 
   return (
     <section className="relative flex h-[520px] flex-col border border-line bg-panel/40">
@@ -225,6 +248,8 @@ function LiveSimpleLoopGraphInner({
 export function LiveSimpleLoopGraph(props: {
   runtime: SimpleLoopRuntime
   activeNodeId: string | null
+  datasetLabel?: string | null
+  targetColumn?: string | null
 }) {
   return (
     <ReactFlowProvider>
