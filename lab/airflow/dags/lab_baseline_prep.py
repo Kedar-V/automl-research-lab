@@ -64,14 +64,7 @@ def lab_baseline_prep():
     @task
     def validate_customers():
         """Check the customers CSV exists and has the join key."""
-        if not CUSTOMERS.is_file():
-            raise FileNotFoundError(CUSTOMERS)
-        # nrows=0 → headers only (fast)
-        cols = list(pd.read_csv(CUSTOMERS, nrows=0).columns)
-        if JOIN_KEY not in cols:
-            raise ValueError(f"missing {JOIN_KEY}")
-        # Returned dict becomes XCom → next task's left_meta
-        return {"path": str(CUSTOMERS)}
+        raise NotImplementedError("validate_customers")
 
     @task
     def validate_transactions():
@@ -119,9 +112,9 @@ def lab_baseline_prep():
     #   validate_transactions ┘                    └──────────────────────┼─→ train → publish
     # -----------------------------------------------------------------------
     # TODO: paste wiring from /guide → Airflow (identical to solution_baseline_prep.py):
-    left = validate_customers()
-    right = validate_transactions()
-    merged = merge_csvs(left, right)  # waits for BOTH validates
+    # left = validate_customers()
+    # right = validate_transactions()
+    # merged = merge_csvs(left, right)  # waits for BOTH validates
     # demo = make_subset(merged)
     # prof = profile_light(demo)
     # base = train_baseline(demo, prof)  # needs subset path + drop list
