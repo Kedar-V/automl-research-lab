@@ -1,10 +1,12 @@
 # Student research loop
 
-Identical to [`../mini_loop/graph.py`](../mini_loop/graph.py) — same imports, state, run/stream APIs.  
-Only difference: node bodies and `build_graph()` start empty.
+Fill node bodies + `build_graph()` wiring.  
+LLM / train helpers are imported from [`../loop_runtime.py`](../loop_runtime.py) (not a student exercise).
 
-Fill by copy-paste from `mini_loop/graph.py` (or the Guide UI).
+Copy from [`../mini_loop/graph.py`](../mini_loop/graph.py), [`COPY_GUIDE.md`](COPY_GUIDE.md), or `/guide` → LangGraph.
 
 ```bash
 python -m student_loop.run_cli --status
 ```
+
+When `"ready": true`, open `/student-loop` → Refresh graph → Run.

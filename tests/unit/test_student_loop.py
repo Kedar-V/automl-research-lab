@@ -10,17 +10,52 @@ from student_loop.graph import (
     REQUIRED_NODES,
     SimpleLoopState,
     assess_graph_ready,
-    get_status,
+    partition_drawable_edges,
+    scan_declared_edges,
+    scan_declared_nodes,
 )
 
 REPO = Path(__file__).resolve().parents[2]
 
 
-def test_skeleton_status_not_ready() -> None:
-    status = get_status()
-    assert status["ready"] is False
-    assert set(status["missing_nodes"]) == set(REQUIRED_NODES)
-    assert status["error"]
+def test_scan_declared_nodes_partial() -> None:
+    src = '''
+def build_graph():
+    g = StateGraph(SimpleLoopState)
+    g.add_node("data_scientist", node_data_scientist)
+    g.add_edge(START, "data_scientist")
+    g.add_node("hypothesis_generator", node_hypothesis)
+    return g.compile()
+'''
+    assert scan_declared_nodes(src) == ["data_scientist", "hypothesis_generator"]
+
+
+def test_scan_declared_nodes_empty() -> None:
+    assert scan_declared_nodes("def build_graph():\n    raise NotImplementedError\n") == []
+
+
+def test_scan_declared_edges_ignores_undeclared_spine() -> None:
+    src = '''
+def build_graph():
+    g.add_node("data_scientist", node_data_scientist)
+    g.add_edge(START, "data_scientist")
+    g.add_node("hypothesis_generator", node_hypothesis)
+    return g.compile()
+'''
+    edges = {(e["source"], e["target"]) for e in scan_declared_edges(src)}
+    assert ("__start__", "data_scientist") in edges
+    assert ("data_scientist", "hypothesis_generator") not in edges
+
+
+def test_partition_drops_unreachable_edge() -> None:
+    nodes = ["data_scientist", "hypothesis_generator"]
+    edges = [
+        {"source": "__start__", "target": "data_scientist"},
+        {"source": "hypothesis_generator", "target": "data_scientist"},
+    ]
+    ok, problems = partition_drawable_edges(nodes, edges)
+    assert ok == [{"source": "__start__", "target": "data_scientist"}]
+    assert any("unreachable from START" in p for p in problems)
 
 
 def test_assess_ready_when_required_nodes_present() -> None:

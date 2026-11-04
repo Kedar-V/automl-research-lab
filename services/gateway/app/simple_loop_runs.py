@@ -72,6 +72,8 @@ class SimpleLoopRunStore:
             "model": record.get("model"),
             "verdict_action": record.get("verdict_action"),
             "error": record.get("error"),
+            # Full loop payload for UI replay (timeline / agent outputs).
+            "result": record.get("result"),
         }
         with self._lock:
             self._runs.insert(0, entry)

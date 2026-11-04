@@ -228,6 +228,21 @@ export async function uploadSimpleLoopDataset(file: File): Promise<SimpleLoopDat
   return json(await fetch(`${BASE}/simple-loop/dataset`, { method: 'POST', body: form }))
 }
 
+export interface SimpleLoopRunResult {
+  cycles?: number
+  best_val_f1?: number
+  holdout_metrics?: { f1?: number; accuracy?: number; n_holdout?: number }
+  verdict?: { action?: string; observation?: string; next_action?: string }
+  stop_reason?: string
+  best_spec?: Record<string, unknown>
+  profile?: Record<string, unknown>
+  memory?: Record<string, unknown>
+  model?: string
+  steps?: Record<string, unknown>[]
+  dataset_path?: string
+  target_column?: string
+}
+
 export interface SimpleLoopRunRecord {
   run_id: string
   created_at: string
@@ -243,6 +258,8 @@ export interface SimpleLoopRunRecord {
   model: string | null
   verdict_action: string | null
   error: string | null
+  /** Full finalize payload when the run finished successfully. */
+  result?: SimpleLoopRunResult | null
 }
 
 export async function listSimpleLoopRuns(limit = 50): Promise<SimpleLoopRunRecord[]> {
@@ -261,6 +278,8 @@ export interface StudentLoopStatus {
   available: boolean
   ready: boolean
   nodes: string[]
+  /** Declared g.add_edge / conditional pairs from student build_graph. */
+  edges: { source: string; target: string }[]
   missing_nodes: string[]
   error: string | null
 }

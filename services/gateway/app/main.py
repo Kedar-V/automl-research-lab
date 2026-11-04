@@ -825,9 +825,10 @@ def simple_loop_info() -> dict:
 @app.get("/simple-loop/models")
 def simple_loop_models() -> dict:
     """Models for the simple-loop agent dropdown (Cursor SDK + OpenRouter)."""
-    default = _default_openrouter_model()
     cursor_ok = bool(os.getenv("CURSOR_API_KEY", "").strip())
     openrouter_ok = bool(os.getenv("OPENROUTER_API_KEY", "").strip())
+    # Prefer Cursor when configured — shared free OpenRouter models 429 often in class.
+    default = "cursor/composer-2.5" if cursor_ok else _default_openrouter_model()
     cursor_models = [
         {
             "id": "cursor/composer-2.5",
@@ -843,15 +844,16 @@ def simple_loop_models() -> dict:
     ]
     models = [*cursor_models, *openrouter]
     ids = {m["id"] for m in models}
-    if default not in ids:
+    env_default = _default_openrouter_model()
+    if env_default not in ids:
         models.insert(
-            1 if default.startswith("cursor/") else len(cursor_models),
+            1 if env_default.startswith("cursor/") else len(cursor_models),
             {
-                "id": default,
-                "name": default,
-                "free": default.endswith(":free"),
-                "provider": "cursor" if default.startswith("cursor/") else "openrouter",
-                "available": cursor_ok if default.startswith("cursor/") else openrouter_ok,
+                "id": env_default,
+                "name": env_default,
+                "free": env_default.endswith(":free"),
+                "provider": "cursor" if env_default.startswith("cursor/") else "openrouter",
+                "available": cursor_ok if env_default.startswith("cursor/") else openrouter_ok,
             },
         )
     return {
@@ -922,11 +924,14 @@ def _import_simple_loop():
     pkg_root = MINI_LOOP_ROOT.parent
     if str(pkg_root) not in sys.path:
         sys.path.insert(0, str(pkg_root))
+    # Drop cached modules so host edits to mini_loop / loop_runtime show up without restart.
+    for name in list(sys.modules):
+        if name in {"mini_loop", "loop_runtime"} or name.startswith("mini_loop."):
+            del sys.modules[name]
     try:
-        from mini_loop import graph as mini_graph
+        return importlib.import_module("mini_loop.graph")
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=503, detail=f"cannot import mini_loop.graph: {exc}") from exc
-    return mini_graph
 
 
 def _simple_loop_dataset_label(dataset_abs: str, requested: str | None) -> str:
@@ -961,6 +966,7 @@ def _record_simple_loop_run(
             "model": (model or "").strip() or _default_openrouter_model(),
             "verdict_action": verdict.get("action") if isinstance(verdict, dict) else None,
             "error": error,
+            "result": result if isinstance(result, dict) else None,
         }
     )
 
@@ -1099,9 +1105,9 @@ def _import_student_loop():
     pkg_root = STUDENT_LOOP_ROOT.parent
     if str(pkg_root) not in sys.path:
         sys.path.insert(0, str(pkg_root))
-    # Drop cached modules so host edits show up without restarting gateway.
+    # Drop cached modules so host edits to student_loop / loop_runtime show up without restart.
     for name in list(sys.modules):
-        if name == "student_loop" or name.startswith("student_loop."):
+        if name in {"student_loop", "loop_runtime"} or name.startswith("student_loop."):
             del sys.modules[name]
     try:
         return importlib.import_module("student_loop.graph")
@@ -1138,9 +1144,12 @@ async def student_loop_stream(
     target_score: float = Query(default=0.8),
     max_cycles: int = Query(default=3, ge=1, le=8),
     seed: int = Query(default=42),
+    model: str | None = Query(default=None),
 ) -> StreamingResponse:
-    """SSE stream for the student skeleton graph (no run history)."""
+    """SSE stream for the student skeleton graph (same panels as simple-loop)."""
     dataset = _resolve_simple_loop_dataset(dataset_path)
+    label = _simple_loop_dataset_label(dataset, dataset_path)
+    chosen_model = (model or "").strip() or _default_openrouter_model()
     student_graph = _import_student_loop()
     status = student_graph.get_status()
     if not status.get("ready"):
@@ -1150,6 +1159,7 @@ async def student_loop_stream(
         )
 
     def event_stream():
+        saved = False
         try:
             for ev in student_graph.stream_simple_loop(
                 dataset_path=dataset,
@@ -1157,11 +1167,42 @@ async def student_loop_stream(
                 target_score=target_score,
                 max_cycles=max_cycles,
                 seed=seed,
+                model=chosen_model,
             ):
                 etype = str(ev.get("type") or "message")
+                if etype == "run_completed" and not saved:
+                    result = ev.get("result") if isinstance(ev, dict) else None
+                    _record_simple_loop_run(
+                        dataset_label=f"[student] {label}",
+                        target_column=target_column,
+                        target_score=target_score,
+                        max_cycles=max_cycles,
+                        result=result if isinstance(result, dict) else {},
+                        model=chosen_model,
+                    )
+                    saved = True
+                if etype == "error" and not saved:
+                    _record_simple_loop_run(
+                        dataset_label=f"[student] {label}",
+                        target_column=target_column,
+                        target_score=target_score,
+                        max_cycles=max_cycles,
+                        error=str(ev.get("message") or "stream error"),
+                        model=chosen_model,
+                    )
+                    saved = True
                 yield f"event: {etype}\n"
                 yield f"data: {json.dumps(ev, default=str)}\n\n"
         except Exception as exc:  # noqa: BLE001
+            if not saved:
+                _record_simple_loop_run(
+                    dataset_label=f"[student] {label}",
+                    target_column=target_column,
+                    target_score=target_score,
+                    max_cycles=max_cycles,
+                    error=str(exc),
+                    model=chosen_model,
+                )
             err = {"type": "error", "message": str(exc)}
             yield "event: error\n"
             yield f"data: {json.dumps(err)}\n\n"

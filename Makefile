@@ -1,9 +1,24 @@
-COMPOSE := docker compose -f infra/docker-compose.yml
+COMPOSE := docker compose -f infra/docker-compose.yml --env-file .env
 VENV := .venv
 PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 
-.PHONY: up down logs test install health venv demo-sse rebuild-gateway frontend
+.PHONY: ensure-env up down logs test install health venv demo-sse rebuild-gateway frontend start airflow
+
+ensure-env:
+	@test -f .env || (cp .env.example .env && echo "Created .env from .env.example")
+
+# One command: Docker stack + Vite UI (blocks on npm run dev).
+start: ensure-env
+	$(COMPOSE) up --build -d
+	@echo "Waiting for gateway on :8000..."
+	@i=0; while [ $$i -lt 36 ]; do \
+	  if curl -sf http://127.0.0.1:8000/healthz >/dev/null; then echo "gateway ok"; break; fi; \
+	  i=$$((i+1)); sleep 5; \
+	  if [ $$i -eq 36 ]; then echo "gateway not ready — try: make health / make logs"; exit 1; fi; \
+	done
+	@echo "Open http://127.0.0.1:5173  (Ctrl+C stops Vite; stack stays up — make down to stop Docker)"
+	cd frontend && npm install && npm run dev
 
 frontend:
 	cd frontend && npm run dev
@@ -14,21 +29,26 @@ venv:
 install: venv
 	$(PIP) install -e ".[dev]"
 
-up:
+up: ensure-env
 	$(COMPOSE) up --build -d
 	@echo "Waiting for service health..."
 	@$(COMPOSE) ps
 
-down:
-	$(COMPOSE) down
+airflow: ensure-env
+	$(COMPOSE) --profile airflow up --build -d
+	@echo "Airflow starting (often 1–2 min). Check: $(COMPOSE) --profile airflow ps"
+	@echo "UI: http://localhost:8088  (admin / admin unless .env overrides)"
 
-logs:
+down: ensure-env
+	$(COMPOSE) --profile airflow down
+
+logs: ensure-env
 	$(COMPOSE) logs -f --tail=100
 
 test: install
 	$(PYTHON) -m pytest tests/contract -q
 
-rebuild-gateway:
+rebuild-gateway: ensure-env
 	$(COMPOSE) up --build -d gateway
 
 health:

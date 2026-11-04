@@ -23,8 +23,15 @@ import { SessionMeta } from '../components/SessionMeta'
 import { SimpleLoopRunHistory } from '../components/SimpleLoopRunHistory'
 import { GRAPH_NODE_TO_VISUAL } from '../graph/simpleLoopConfig'
 import { guessTargetColumn, sniffCsvHeaders } from '../lib/csvHeaders'
+import {
+  agentOutputFromStep,
+  experimentsFromRunSteps,
+  upsertExperiment,
+  withAgentOutput,
+} from '../lib/simpleLoopAgents'
+import { SIMPLE_LOOP_NODES } from '../graph/simpleLoopConfig'
 import { initialSessionState } from '../state/sessionReducer'
-import type { EventEnvelope, ExperimentEntry, SessionState } from '../types/events'
+import type { AgentCycleOutput, EventEnvelope, ExperimentEntry, SessionState } from '../types/events'
 
 type Step = {
   node?: string
@@ -39,6 +46,11 @@ type Step = {
   status?: string
   verdict?: { action?: string; observation?: string }
   metrics?: { f1?: number; accuracy?: number }
+  output?: unknown
+  hypothesis?: unknown
+  spec?: unknown
+  profile?: unknown
+  model?: string | null
 }
 
 type RunResult = {
@@ -85,17 +97,6 @@ function setStatus(
   }
 }
 
-function upsertExperiment(
-  list: ExperimentEntry[],
-  entry: ExperimentEntry,
-): ExperimentEntry[] {
-  const i = list.findIndex((e) => e.experimentId === entry.experimentId)
-  if (i < 0) return [...list, entry]
-  const next = [...list]
-  next[i] = { ...next[i], ...entry }
-  return next
-}
-
 function makeHealEvent(expId: string, note?: string): EventEnvelope {
   return {
     timestamp: new Date().toISOString(),
@@ -139,11 +140,13 @@ export function SimpleLoopPage() {
   const [holdoutScore, setHoldoutScore] = useState<number | null>(null)
   const [runHistory, setRunHistory] = useState<SimpleLoopRunRecord[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [models, setModels] = useState<SimpleLoopModel[]>([])
   const [modelId, setModelId] = useState('')
   const sourceRef = useRef<EventSource | null>(null)
   const runningRef = useRef(false)
   const cycleRef = useRef(0)
+  const dsOutputRef = useRef<AgentCycleOutput | null>(null)
 
   const refreshHistory = useCallback(async () => {
     setHistoryLoading(true)
@@ -187,8 +190,16 @@ export function SimpleLoopPage() {
       try {
         const catalog = await listSimpleLoopModels()
         if (cancelled) return
-        setModels(catalog.models ?? [])
-        setModelId((prev) => prev || catalog.default || catalog.models?.[0]?.id || '')
+        const rows = catalog.models ?? []
+        setModels(rows)
+        setModelId((prev) => {
+          const fallback = catalog.default || rows[0]?.id || ''
+          if (!prev) return fallback
+          const match = rows.find((m) => m.id === prev)
+          // Drop stale/unavailable picks (e.g. rate-limited free model left selected).
+          if (!match || match.available === false) return fallback
+          return prev
+        })
       } catch {
         // Non-fatal — keep empty and let run use gateway default
       }
@@ -210,8 +221,101 @@ export function SimpleLoopPage() {
     setHoldoutScore(null)
     setResult(null)
     setError(null)
+    setSelectedRunId(null)
     cycleRef.current = 0
+    dsOutputRef.current = null
   }, [])
+
+  const openHistoryRun = useCallback(
+    (run: SimpleLoopRunRecord) => {
+      sourceRef.current?.close()
+      sourceRef.current = null
+      runningRef.current = false
+      setBusy(false)
+      setSelectedRunId(run.run_id)
+      setError(run.error || null)
+
+      if (run.dataset) setDatasetFilename(run.dataset)
+      if (run.target_column) setTargetColumn(run.target_column)
+      if (typeof run.target_score === 'number') setTargetScore(run.target_score)
+      if (typeof run.max_cycles === 'number') setMaxCycles(run.max_cycles)
+      if (run.model) setModelId(run.model)
+
+      const payload = run.result
+      const rebuilt = experimentsFromRunSteps(payload?.steps)
+      setExperiments(rebuilt)
+      setTraceEvents([])
+      setLiveBest(
+        typeof payload?.best_val_f1 === 'number'
+          ? payload.best_val_f1
+          : typeof run.best_val_f1 === 'number'
+            ? run.best_val_f1
+            : null,
+      )
+      setLiveCycle(
+        typeof payload?.cycles === 'number'
+          ? payload.cycles
+          : typeof run.cycles === 'number'
+            ? run.cycles
+            : 0,
+      )
+      setHoldoutScore(
+        typeof payload?.holdout_metrics?.f1 === 'number'
+          ? payload.holdout_metrics.f1
+          : typeof run.holdout_f1 === 'number'
+            ? run.holdout_f1
+            : null,
+      )
+      setStopReason(payload?.stop_reason ?? run.stop_reason)
+      setResult(
+        payload
+          ? {
+              cycles: payload.cycles,
+              best_val_f1: payload.best_val_f1,
+              holdout_metrics: payload.holdout_metrics,
+              verdict: payload.verdict,
+              stop_reason: payload.stop_reason,
+              best_spec: payload.best_spec,
+              steps: payload.steps as Step[] | undefined,
+            }
+          : {
+              cycles: run.cycles ?? undefined,
+              best_val_f1: run.best_val_f1 ?? undefined,
+              holdout_metrics:
+                run.holdout_f1 != null ? { f1: run.holdout_f1 } : undefined,
+              stop_reason: run.stop_reason ?? undefined,
+              verdict: run.verdict_action
+                ? { action: run.verdict_action }
+                : undefined,
+            },
+      )
+
+      const nextRuntime: SimpleLoopRuntime = {}
+      for (const n of SIMPLE_LOOP_NODES) {
+        nextRuntime[n.id] = { status: 'completed' }
+      }
+      if (run.dataset) nextRuntime.dataset = { status: 'completed', note: run.dataset }
+      for (const step of payload?.steps ?? []) {
+        const node = String(step.node || '')
+        const visual = GRAPH_NODE_TO_VISUAL[node] ?? node
+        if (visual) {
+          nextRuntime[visual] = {
+            status: step.status === 'failed' || step.status === 'error' ? 'failed' : 'completed',
+            note: typeof step.note === 'string' ? step.note : undefined,
+          }
+        }
+      }
+      setRuntime(nextRuntime)
+      setActiveNodeId(null)
+      cycleRef.current =
+        typeof payload?.cycles === 'number'
+          ? payload.cycles
+          : typeof run.cycles === 'number'
+            ? run.cycles
+            : 0
+    },
+    [],
+  )
 
   const onPickCatalog = useCallback(
     (filename: string) => {
@@ -274,7 +378,14 @@ export function SimpleLoopPage() {
       target_score: String(targetScore),
       max_cycles: String(maxCycles),
     })
-    if (modelId.trim()) params.set('model', modelId.trim())
+    const chosenModel = modelId.trim()
+    if (!chosenModel) {
+      setError('Pick a model first')
+      setBusy(false)
+      runningRef.current = false
+      return
+    }
+    params.set('model', chosenModel)
     const source = new EventSource(`/api/simple-loop/stream?${params.toString()}`)
     sourceRef.current = source
 
@@ -311,17 +422,28 @@ export function SimpleLoopPage() {
           }
           return next
         })
-        if (ev.node === 'ml_engineer') {
+        if (ev.node === 'hypothesis_generator' || ev.node === 'ml_engineer') {
           const id = `exp-${cycleRef.current + 1}`
-          setExperiments((prev) =>
-            upsertExperiment(prev, {
+          setExperiments((prev) => {
+            const existing = prev.find((e) => e.experimentId === id)
+            const base: ExperimentEntry = existing ?? {
               experimentId: id,
               status: 'running',
               trainMetrics: {},
               validationMetrics: {},
-              note: 'training…',
-            }),
-          )
+              note: ev.node === 'ml_engineer' ? 'training…' : 'planning…',
+              agentOutputs: {},
+            }
+            const withDs =
+              !existing && dsOutputRef.current
+                ? withAgentOutput(base, 'data_scientist', dsOutputRef.current)
+                : base
+            return upsertExperiment(prev, {
+              ...withDs,
+              status: 'running',
+              note: ev.node === 'ml_engineer' ? 'training…' : withDs.note,
+            })
+          })
         }
         if (ev.node === 'holdout_eval') {
           setRuntime((prev) => setStatus(prev, 'best_candidate', 'completed', 'candidate locked'))
@@ -357,20 +479,52 @@ export function SimpleLoopPage() {
           cycleRef.current = ev.cycle
         }
 
-        if (ev.node === 'ml_engineer' && ev.step) {
-          const step = ev.step
-          const expId =
-            step.experiment_id ||
-            `exp-${typeof ev.cycle === 'number' ? ev.cycle : cycleRef.current || 1}`
-          const metrics = step.validation_metrics ?? {}
-          const f1 = typeof step.f1 === 'number' ? step.f1 : metrics.f1
-          const failed = step.status === 'failed' || step.status === 'error'
+        const step = (ev.step ?? {}) as Record<string, unknown>
+        const agentPayload = agentOutputFromStep(step)
+
+        if (ev.node === 'data_scientist') {
+          dsOutputRef.current = agentPayload
           setExperiments((prev) => {
-            const runningIdx = prev.findIndex((e) => e.status === 'running')
-            const base = runningIdx >= 0 ? prev.filter((_, i) => i !== runningIdx) : prev
-            return upsertExperiment(base, {
+            if (prev.length === 0) return prev
+            const first = withAgentOutput(prev[0], 'data_scientist', agentPayload)
+            return [first, ...prev.slice(1)]
+          })
+        }
+
+        if (ev.node === 'hypothesis_generator') {
+          const expId = `exp-${cycleRef.current + 1}`
+          setExperiments((prev) => {
+            const cur = prev.find((e) => e.experimentId === expId)
+            const base: ExperimentEntry = cur ?? {
               experimentId: expId,
-              modelFamily: step.model_family,
+              status: 'running',
+              trainMetrics: {},
+              validationMetrics: {},
+              note: agentPayload.note,
+              agentOutputs: {},
+            }
+            let next = withAgentOutput(base, 'hypothesis_generator', agentPayload)
+            if (dsOutputRef.current) {
+              next = withAgentOutput(next, 'data_scientist', dsOutputRef.current)
+            }
+            return upsertExperiment(prev, next)
+          })
+        }
+
+        if (ev.node === 'ml_engineer' && ev.step) {
+          const mlStep = ev.step
+          const expId =
+            mlStep.experiment_id ||
+            `exp-${typeof ev.cycle === 'number' ? ev.cycle : cycleRef.current || 1}`
+          const metrics = mlStep.validation_metrics ?? {}
+          const f1 = typeof mlStep.f1 === 'number' ? mlStep.f1 : metrics.f1
+          const failed = mlStep.status === 'failed' || mlStep.status === 'error'
+          setExperiments((prev) => {
+            const runningIdx = prev.findIndex((e) => e.experimentId === expId || e.status === 'running')
+            const prior = runningIdx >= 0 ? prev[runningIdx] : undefined
+            const base: ExperimentEntry = {
+              experimentId: expId,
+              modelFamily: mlStep.model_family,
               status: failed ? 'failed' : 'completed',
               trainMetrics: {},
               validationMetrics: {
@@ -378,13 +532,21 @@ export function SimpleLoopPage() {
                 ...(typeof f1 === 'number' ? { f1 } : {}),
               },
               durationSeconds:
-                typeof step.duration_seconds === 'number' ? step.duration_seconds : undefined,
-              retryCount: step.repaired ? 1 : 0,
-              note: step.note,
-            })
+                typeof mlStep.duration_seconds === 'number' ? mlStep.duration_seconds : undefined,
+              retryCount: mlStep.repaired ? 1 : 0,
+              note: mlStep.note,
+              agentOutputs: prior?.agentOutputs,
+            }
+            let next = withAgentOutput(base, 'ml_engineer', agentPayload)
+            if (dsOutputRef.current && !next.agentOutputs?.data_scientist) {
+              next = withAgentOutput(next, 'data_scientist', dsOutputRef.current)
+            }
+            const without =
+              runningIdx >= 0 ? prev.filter((_, i) => i !== runningIdx) : prev.filter((e) => e.experimentId !== expId)
+            return upsertExperiment(without, next)
           })
-          if (step.repaired) {
-            setTraceEvents((prev) => [...prev, makeHealEvent(expId, step.note)])
+          if (mlStep.repaired) {
+            setTraceEvents((prev) => [...prev, makeHealEvent(expId, mlStep.note)])
           }
         }
 
@@ -560,8 +722,9 @@ export function SimpleLoopPage() {
                   {models
                     .filter((m) => m.provider !== 'cursor' && m.free)
                     .map((m) => (
-                      <option key={m.id} value={m.id}>
+                      <option key={m.id} value={m.id} disabled={m.available === false}>
                         {m.name}
+                        {m.available === false ? ' (set OPENROUTER_API_KEY)' : ''}
                       </option>
                     ))}
                 </optgroup>
@@ -571,8 +734,9 @@ export function SimpleLoopPage() {
                   {models
                     .filter((m) => m.provider !== 'cursor' && !m.free)
                     .map((m) => (
-                      <option key={m.id} value={m.id}>
+                      <option key={m.id} value={m.id} disabled={m.available === false}>
                         {m.name}
+                        {m.available === false ? ' (set OPENROUTER_API_KEY)' : ''}
                       </option>
                     ))}
                 </optgroup>
@@ -720,7 +884,9 @@ export function SimpleLoopPage() {
           <SimpleLoopRunHistory
             runs={runHistory}
             loading={historyLoading}
+            selectedRunId={selectedRunId}
             onRefresh={() => void refreshHistory()}
+            onOpenRun={openHistoryRun}
           />
         </div>
       </div>

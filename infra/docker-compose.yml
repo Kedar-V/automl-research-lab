@@ -50,6 +50,9 @@ services:
       args:
         SERVICE_DIR: gateway
         PORT: "8000"
+    # Repo-root .env (compose file lives in infra/)
+    env_file:
+      - ../.env
     environment:
       SERVICE_TOKEN: ${SERVICE_TOKEN:-dev-service-token}
       GATEWAY_DEFAULT_MODE: ${GATEWAY_DEFAULT_MODE:-live}
@@ -76,6 +79,8 @@ services:
       - ../datasets:/bundled
       - ../mini_loop:/mini_loop
       - ../student_loop:/student_loop
+      # Shared LLM/train helpers imported by both graphs (not a student paste target)
+      - ../loop_runtime.py:/app/loop_runtime.py
       - ../mocks/recordings:/app/mocks/recordings:ro
       - project_data:/data/projects
       - simple_loop_data:/data/simple_loop

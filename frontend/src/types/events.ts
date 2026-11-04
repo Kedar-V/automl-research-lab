@@ -41,6 +41,15 @@ export type SessionRunStatus =
   | 'reset'
   | 'error'
 
+/** Per-cycle agent payload for Simple/Student loop timeline drill-down. */
+export interface AgentCycleOutput {
+  note?: string
+  used_llm?: boolean
+  model?: string | null
+  status?: string
+  output?: unknown
+}
+
 export interface ExperimentEntry {
   experimentId: string
   modelFamily?: string
@@ -53,6 +62,12 @@ export interface ExperimentEntry {
   nextAction?: string
   retryCount?: number
   note?: string
+  /** DS / hypothesis / ML outputs for this cycle (expand in Experiment timeline). */
+  agentOutputs?: {
+    data_scientist?: AgentCycleOutput
+    hypothesis_generator?: AgentCycleOutput
+    ml_engineer?: AgentCycleOutput
+  }
 }
 
 export interface ActivityItem {

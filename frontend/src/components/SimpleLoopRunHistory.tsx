@@ -1,4 +1,3 @@
-import { useState } from 'react'
 import type { SimpleLoopRunRecord } from '../api/gateway'
 
 function fmtScore(v: number | null | undefined): string {
@@ -14,12 +13,19 @@ function fmtWhen(iso: string | null | undefined): string {
 type Props = {
   runs: SimpleLoopRunRecord[]
   loading?: boolean
+  selectedRunId?: string | null
   onRefresh?: () => void
+  /** Load this run into the main lab panels (timeline, scores, meta). */
+  onOpenRun?: (run: SimpleLoopRunRecord) => void
 }
 
-export function SimpleLoopRunHistory({ runs, loading, onRefresh }: Props) {
-  const [openId, setOpenId] = useState<string | null>(null)
-
+export function SimpleLoopRunHistory({
+  runs,
+  loading,
+  selectedRunId,
+  onRefresh,
+  onOpenRun,
+}: Props) {
   return (
     <section className="border border-line bg-panel/40 px-4 py-4">
       <div className="mb-3 flex items-baseline justify-between gap-2">
@@ -35,6 +41,7 @@ export function SimpleLoopRunHistory({ runs, loading, onRefresh }: Props) {
           </button>
         )}
       </div>
+      <p className="mb-3 text-xs text-mist">Click a run to open it in the panels above.</p>
 
       {runs.length === 0 ? (
         <p className="rounded border border-dashed border-line px-4 py-8 text-center text-sm text-mist">
@@ -43,19 +50,33 @@ export function SimpleLoopRunHistory({ runs, loading, onRefresh }: Props) {
       ) : (
         <ul className="space-y-2">
           {runs.map((r) => {
-            const open = openId === r.run_id
+            const selected = selectedRunId === r.run_id
+            const hasReplay = Boolean(r.result?.steps?.length)
             return (
-              <li key={r.run_id} className="border border-line bg-ink-2/40">
+              <li key={r.run_id}>
                 <button
                   type="button"
-                  onClick={() => setOpenId(open ? null : r.run_id)}
-                  className="flex w-full flex-wrap items-baseline justify-between gap-2 px-3 py-3 text-left hover:bg-panel/50"
+                  onClick={() => onOpenRun?.(r)}
+                  disabled={!onOpenRun}
+                  className={`flex w-full flex-wrap items-baseline justify-between gap-2 border px-3 py-3 text-left transition ${
+                    selected
+                      ? 'border-teal bg-teal/10'
+                      : 'border-line bg-ink-2/40 hover:border-teal/50 hover:bg-panel/50'
+                  } disabled:opacity-50`}
                 >
                   <div className="min-w-0">
                     <p className="font-mono text-sm text-teal">
                       {r.dataset ?? 'dataset'} · {r.target_column ?? '—'}
+                      {selected ? (
+                        <span className="ml-2 text-[10px] uppercase tracking-wide text-paper">
+                          open
+                        </span>
+                      ) : null}
                     </p>
-                    <p className="mt-1 text-xs text-mist">{fmtWhen(r.created_at)}</p>
+                    <p className="mt-1 text-xs text-mist">
+                      {fmtWhen(r.created_at)}
+                      {!hasReplay && r.status !== 'error' ? ' · summary only' : ''}
+                    </p>
                   </div>
                   <dl className="flex flex-wrap gap-3 font-mono text-[11px] text-mist">
                     <div>
@@ -70,11 +91,7 @@ export function SimpleLoopRunHistory({ runs, loading, onRefresh }: Props) {
                     </div>
                     <div>
                       <dt className="sr-only">Status</dt>
-                      <dd
-                        className={
-                          r.status === 'error' ? 'text-danger' : 'text-paper'
-                        }
-                      >
+                      <dd className={r.status === 'error' ? 'text-danger' : 'text-paper'}>
                         {r.status === 'error'
                           ? 'error'
                           : r.stop_reason || r.status || 'done'}
@@ -82,8 +99,8 @@ export function SimpleLoopRunHistory({ runs, loading, onRefresh }: Props) {
                     </div>
                   </dl>
                 </button>
-                {open && (
-                  <div className="border-t border-line px-3 py-3 font-mono text-[11px] text-mist">
+                {selected && (
+                  <div className="border border-t-0 border-teal/40 bg-ink-2/60 px-3 py-3 font-mono text-[11px] text-mist">
                     <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                       <div>
                         <dt>Run id</dt>
@@ -109,8 +126,16 @@ export function SimpleLoopRunHistory({ runs, loading, onRefresh }: Props) {
                         <dd className="break-all text-paper">{r.model ?? '—'}</dd>
                       </div>
                     </dl>
-                    {r.error && (
-                      <p className="mt-2 text-danger">Error: {r.error}</p>
+                    {r.error && <p className="mt-2 text-danger">Error: {r.error}</p>}
+                    {!hasReplay && !r.error && (
+                      <p className="mt-2 text-amber">
+                        This run has no saved steps — re-run to capture agent outputs.
+                      </p>
+                    )}
+                    {hasReplay && (
+                      <p className="mt-2 text-teal">
+                        Loaded into Experiment timeline · Score chart · Budget panels.
+                      </p>
                     )}
                   </div>
                 )}

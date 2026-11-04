@@ -167,9 +167,10 @@ function LangGraphTab() {
 
       <Step n={2} title="Open the skeleton">
         <p>
-          Edit <Code>student_loop/graph.py</Code>. Everything is self-contained in that file (no helpers
-          module). Filled reference: <Code>mini_loop/graph.py</Code> — same shape, with working bodies.
-          Markdown copy steps: <Code>student_loop/COPY_GUIDE.md</Code>.
+          Edit <Code>student_loop/graph.py</Code>. LLM helpers are imported from{" "}
+          <Code>loop_runtime.py</Code> (already wired). Filled reference:{" "}
+          <Code>mini_loop/graph.py</Code> — same node shape, with working bodies. Markdown copy steps:{" "}
+          <Code>student_loop/COPY_GUIDE.md</Code>.
         </p>
         <div>
           Optional readiness check:
@@ -182,8 +183,8 @@ function LangGraphTab() {
       <Step n={3} title="Fill agent nodes + router">
         <p>
           Replace each <Code>raise NotImplementedError(...)</Code> body with the matching snippet
-          (keep the function signatures). Imports for pandas/sklearn are already at the top of the
-          student file.
+          (keep the function signatures). LLM helpers are already imported from{" "}
+          <Code>loop_runtime.py</Code> — you do not paste Cursor/OpenRouter helper code.
         </p>
         {NODE_SNIPPETS.map((s) => (
           <div key={s.id} className="space-y-1">

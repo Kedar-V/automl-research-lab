@@ -44,21 +44,21 @@ export const SIMPLE_LOOP_NODES: SimpleLoopNode[] = [
   {
     id: 'data_scientist',
     title: 'Data Scientist',
-    role: 'Profile + leakage (once)',
+    role: 'Profile + leakage only',
     kind: 'llm',
     service: 'node script',
   },
   {
     id: 'hypothesis_generator',
     title: 'Hypothesis Generator',
-    role: 'One ExperimentSpec',
+    role: 'Conceptual next step (no HPT)',
     kind: 'llm',
     service: 'node script',
   },
   {
     id: 'ml_engineer',
     title: 'ML Engineer',
-    role: 'Validate · run · repair',
+    role: 'HPT config · train · repair',
     kind: 'code_llm',
     service: 'node script',
   },
@@ -160,7 +160,7 @@ export const SIMPLE_LOOP_EDGES: SimpleLoopEdge[] = [
     sourceHandle: 'right-out',
     targetHandle: 'left-in',
   },
-  // Revise loop — down, left, left, up
+  // Revise loop — down from router, left into memory writer, left, up into hyp
   {
     id: 'e-router-mem',
     source: 'router',
@@ -168,7 +168,7 @@ export const SIMPLE_LOOP_EDGES: SimpleLoopEdge[] = [
     kind: 'control',
     label: 'revise',
     sourceHandle: 'bottom-out',
-    targetHandle: 'top-in',
+    targetHandle: 'right-in',
   },
   {
     id: 'e-mem-store',
@@ -195,7 +195,7 @@ export const SIMPLE_LOOP_EDGES: SimpleLoopEdge[] = [
     sourceHandle: 'top-out',
     targetHandle: 'bottom-in',
   },
-  // Accept / stop
+  // Accept / stop — straight down under router, then right to holdout
   {
     id: 'e-router-best',
     source: 'router',
@@ -215,6 +215,13 @@ export const SIMPLE_LOOP_EDGES: SimpleLoopEdge[] = [
   },
 ]
 
+/**
+ * Classroom snap layout (x step 260, y: 40 / 260 / 480).
+ * Columns align so control edges stay axis-aligned (straight step paths):
+ *   top:    dataset · ds · hyp · ml · judge · router
+ *   mid:               ctx · mem · writer
+ *   bottom:                         best · holdout
+ */
 export const SIMPLE_LOOP_POSITIONS: Record<SimpleLoopNodeId, { x: number; y: number }> = {
   dataset: { x: 0, y: 40 },
   data_scientist: { x: 260, y: 40 },
@@ -222,11 +229,12 @@ export const SIMPLE_LOOP_POSITIONS: Record<SimpleLoopNodeId, { x: number; y: num
   ml_engineer: { x: 780, y: 40 },
   judge: { x: 1040, y: 40 },
   router: { x: 1300, y: 40 },
-  memory_writer: { x: 1300, y: 250 },
-  research_memory: { x: 1040, y: 250 },
-  context_builder: { x: 780, y: 250 },
-  best_candidate: { x: 1300, y: 460 },
-  holdout_eval: { x: 1560, y: 460 },
+  // Mid row under hyp / ml / judge (not under router) → revise is a clean L
+  context_builder: { x: 520, y: 260 },
+  research_memory: { x: 780, y: 260 },
+  memory_writer: { x: 1040, y: 260 },
+  best_candidate: { x: 1300, y: 480 },
+  holdout_eval: { x: 1560, y: 480 },
 }
 
 export const SIMPLE_LOOP_FLOW = [

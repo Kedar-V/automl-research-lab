@@ -1,35 +1,50 @@
-"""STUDENT LAB — identical to mini_loop/graph.py; fill the empty bodies.
+"""STUDENT LAB — fill node bodies + wire build_graph().
 
-Copy each function body from mini_loop/graph.py (or the Guide). When build_graph
-is wired, this file should match the reference line-for-line except these stubs.
-
-Simple research loop — one self-contained LangGraph file.
+LLM / train helpers are imported from loop_runtime.py (instructor-maintained).
+Copy node bodies and wiring from mini_loop/graph.py or the Guide (/guide → LangGraph).
 
 Flow:
   START → data_scientist → hypothesis → ml_engineer → judge
             ↑__________________________________|
             |   (revise: memory → context → hypothesis again)
             └── accept/stop → holdout_eval → END
-
-No helper modules. No subprocess nodes. All logic is in the node functions below.
 """
 
 from __future__ import annotations
 
 import json
 import operator
+import os
+import sys
 from pathlib import Path
 from typing import Annotated, TypedDict
 
 import pandas as pd
 from langgraph.graph import END, START, StateGraph
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import f1_score
-from sklearn.model_selection import train_test_split
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
+for _p in (REPO, Path("/app")):
+    if _p.exists() and str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
 
+from loop_runtime import (  # noqa: E402
+    DEFAULT_MODEL,
+    FAMILIES,
+    _SPEC_SCHEMA_HINT,
+    _coerce_experiment_spec,
+    _fit_score,
+    _heuristic_plan,
+    _heuristic_profile,
+    _heuristic_spec,
+    _heuristic_verdict,
+    _repair_heuristic,
+    _resolve_model,
+    _validate_spec,
+    extract_json_object,
+    llm_configured,
+    openrouter_chat,
+)
 
 # ---------------------------------------------------------------------------
 # STATE
@@ -45,10 +60,11 @@ class SimpleLoopState(TypedDict, total=False):
     cycle: int
     seed: int
     holdout_frac: float
-    model: str  # optional OpenRouter id (unused in this heuristic demo)
+    model: str  # OpenRouter / Cursor model id from the UI / env
     profile: dict
     brief: dict
-    experiment_spec: dict
+    hypothesis: dict  # conceptual plan from hypothesis_generator (not HPT numbers)
+    experiment_spec: dict  # concrete HPT config from ml_engineer
     execution_result: dict
     verdict: dict
     memory: dict
@@ -65,24 +81,23 @@ class SimpleLoopState(TypedDict, total=False):
 # LangGraph calls it, merges the patch into state, then follows an edge.
 # ---------------------------------------------------------------------------
 
-
 def node_data_scientist(state: SimpleLoopState) -> dict:
-    """Read the CSV once and describe columns (no LLM)."""
+    """Profile CSV via LLM; heuristic fallback if key/parse fails."""
     raise NotImplementedError("data_scientist")
 
 
 def node_hypothesis(state: SimpleLoopState) -> dict:
-    """Propose one tiny experiment (vary C each cycle)."""
+    """Conceptual next experiment — no concrete HPT numbers."""
     raise NotImplementedError("hypothesis_generator")
 
 
 def node_ml_engineer(state: SimpleLoopState) -> dict:
-    """Train on train/val only. Holdout rows are split away and NOT scored here."""
+    """Turn conceptual hypothesis into concrete HPT ExperimentSpec, then train/val."""
     raise NotImplementedError("ml_engineer")
 
 
 def node_judge(state: SimpleLoopState) -> dict:
-    """Decide accept (good enough) vs revise (try again)."""
+    """Accept vs revise from validation metrics (+ optional LLM observation)."""
     raise NotImplementedError("judge")
 
 
@@ -110,6 +125,7 @@ def route_after_judge(state: SimpleLoopState) -> str:
     """
     raise NotImplementedError("router")
 
+
 # ---------------------------------------------------------------------------
 # GRAPH WIRING
 # StateGraph = the canvas.
@@ -122,9 +138,8 @@ def build_graph():
     g = StateGraph(SimpleLoopState)
 
     # TODO: paste add_node / add_edge / add_conditional_edges / return g.compile()
-    # from mini_loop/graph.py (identical block).
+    # from mini_loop/graph.py (identical block) or the Guide wiring snippet.
     raise NotImplementedError("wire nodes and edges, then return g.compile()")
-
 
 
 REQUIRED_NODES = frozenset(
@@ -138,6 +153,90 @@ REQUIRED_NODES = frozenset(
         "holdout_eval",
     }
 )
+
+
+def scan_declared_nodes(source: str) -> list[str]:
+    """Names passed to g.add_node(...) in source (order preserved, unique).
+
+    Used so the UI can show boxes one-by-one before the graph compiles.
+    """
+    import re
+
+    found: list[str] = []
+    seen: set[str] = set()
+    for name in re.findall(r"""\.add_node\(\s*['\"]([^'\"]+)['\"]""", source):
+        if name not in seen:
+            seen.add(name)
+            found.append(name)
+    return found
+
+
+def _edge_endpoint(token: str) -> str:
+    t = token.strip()
+    if t in {"START", "END"}:
+        return "__start__" if t == "START" else "__end__"
+    if (t.startswith("'") and t.endswith("'")) or (t.startswith('"') and t.endswith('"')):
+        return t[1:-1]
+    return t
+
+
+def scan_declared_edges(source: str) -> list[dict[str, str]]:
+    """Pairs from g.add_edge(...) and judge conditional map in source."""
+    import re
+
+    edges: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(src: str, dst: str) -> None:
+        key = (src, dst)
+        if key in seen or not src or not dst:
+            return
+        seen.add(key)
+        edges.append({"source": src, "target": dst})
+
+    for m in re.finditer(r"\.add_edge\(\s*([^,]+)\s*,\s*([^)]+)\)", source):
+        add(_edge_endpoint(m.group(1)), _edge_endpoint(m.group(2)))
+
+    # add_conditional_edges("judge", ..., {"memory": "memory_writer", "holdout": "holdout_eval"})
+    if re.search(r"\.add_conditional_edges\(", source):
+        if re.search(r"""['\"]memory['\"]\s*:\s*['\"]memory_writer['\"]""", source):
+            add("judge", "memory_writer")
+        if re.search(r"""['\"]holdout['\"]\s*:\s*['\"]holdout_eval['\"]""", source):
+            add("judge", "holdout_eval")
+
+    return edges
+
+
+def partition_drawable_edges(
+    nodes: list[str], edges: list[dict[str, str]]
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Keep edges reachable from START; report the rest (not drawn on the UI)."""
+    declared = set(nodes)
+    adj: dict[str, list[str]] = {}
+    for e in edges:
+        adj.setdefault(e["source"], []).append(e["target"])
+
+    reachable: set[str] = {"__start__"}
+    stack = ["__start__"]
+    while stack:
+        cur = stack.pop()
+        for nxt in adj.get(cur, []):
+            if nxt not in reachable:
+                reachable.add(nxt)
+                stack.append(nxt)
+
+    ok: list[dict[str, str]] = []
+    problems: list[str] = []
+    for e in edges:
+        s, t = e["source"], e["target"]
+        if s != "__start__" and s not in reachable:
+            problems.append(f"{s} → {t} (unreachable from START — not drawn)")
+            continue
+        if t not in declared and t != "__end__":
+            problems.append(f"{s} → {t} ({t} is not a declared node — not drawn)")
+            continue
+        ok.append(e)
+    return ok, problems
 
 
 def assess_graph_ready(app) -> dict:
@@ -154,26 +253,53 @@ def assess_graph_ready(app) -> dict:
 
 
 def get_status() -> dict:
-    """Import-safe status for the gateway / UI."""
+    """Status for /student-loop: partial nodes/edges for the canvas; ready when fully wired."""
+    import inspect
+
+    try:
+        src = inspect.getsource(build_graph)
+    except (OSError, TypeError):
+        src = ""
+    declared = scan_declared_nodes(src)
+    declared_edges = scan_declared_edges(src)
+    drawable, edge_problems = partition_drawable_edges(declared, declared_edges)
+    missing = sorted(REQUIRED_NODES - set(declared))
+
+    def _error(*parts: str | None) -> str | None:
+        msgs = [p for p in parts if p]
+        if edge_problems:
+            msgs.append("dead edges: " + "; ".join(edge_problems))
+        return " · ".join(msgs) if msgs else None
+
     try:
         app = build_graph()
     except NotImplementedError as exc:
         return {
             "ready": False,
-            "nodes": [],
-            "missing_nodes": sorted(REQUIRED_NODES),
-            "error": str(exc) or "build_graph not implemented",
+            "nodes": declared,
+            "edges": drawable,
+            "missing_nodes": missing if missing else sorted(REQUIRED_NODES),
+            "error": _error(str(exc) or "build_graph not implemented"),
         }
     except Exception as exc:  # noqa: BLE001
+        # Partial wiring often fails compile — still show declared nodes/edges.
         return {
             "ready": False,
-            "nodes": [],
-            "missing_nodes": sorted(REQUIRED_NODES),
-            "error": str(exc),
+            "nodes": declared,
+            "edges": drawable,
+            "missing_nodes": missing,
+            "error": _error(str(exc)),
         }
-    return assess_graph_ready(app)
 
-
+    assessed = assess_graph_ready(app)
+    nodes = assessed["nodes"] or declared
+    return {
+        "ready": assessed["ready"],
+        "nodes": nodes,
+        "edges": drawable,
+        "missing_nodes": assessed["missing_nodes"],
+        "error": _error(assessed["error"]),
+    }
 def _initial_state(
     *,
     dataset_path: str,
@@ -197,8 +323,8 @@ def _initial_state(
         "memory": {"history": [], "findings": [], "lessons": []},
         "brief": {},
     }
-    if model and str(model).strip():
-        state["model"] = str(model).strip()
+    chosen = (model or "").strip() or DEFAULT_MODEL
+    state["model"] = chosen
     return state
 
 
@@ -214,6 +340,7 @@ def _finalize_payload(final: dict) -> dict:
         "stop_reason": final.get("stop_reason"),
         "profile": final.get("profile"),
         "memory": final.get("memory"),
+        "model": final.get("model"),
         "steps": final.get("steps") or [],
     }
 
@@ -299,8 +426,11 @@ def stream_simple_loop(
 
                 yield {"type": "node_started", "node": node_name, "status": "running"}
                 if isinstance(patch, dict):
+                    steps = list(patch.get("steps") or [])
+                    # Mirror Annotated[list, operator.add] — stream patches omit prior steps.
                     merged.update({k: v for k, v in patch.items() if k != "steps"})
-                    steps = patch.get("steps") or []
+                    if steps:
+                        merged["steps"] = list(merged.get("steps") or []) + steps
                     note = steps[-1].get("note") if steps else None
                     yield {
                         "type": "node_completed",

@@ -1,5 +1,6 @@
 // Source of truth: airflow/dags/simple_loop_baseline_prep.py
 // Student file is identical except empty bodies + commented wiring.
+// Snippets include the same inline comments / wiring header as the reference.
 
 export interface Snippet {
   id: string
@@ -32,7 +33,7 @@ export const TASK_SNIPPETS: Snippet[] = [
   {
     id: 'validate_customers',
     title: 'validate_customers',
-    hint: 'Paste over the raise — identical to simple_loop_baseline_prep.py.',
+    hint: 'Paste over the raise (docstring already on the stub). Same comments as simple_loop_baseline_prep.py.',
     code: `if not CUSTOMERS.is_file():
     raise FileNotFoundError(CUSTOMERS)
 # nrows=0 → headers only (fast)
@@ -57,7 +58,7 @@ return {"path": str(TRANSACTIONS)}`,
   {
     id: 'merge_csvs',
     title: 'merge_csvs',
-    hint: 'Paste over the raise — identical to simple_loop_baseline_prep.py.',
+    hint: 'Paste over the raise — keep the multi-line docstring already on the stub.',
     code: `run_id = context["ts_nodash"]  # e.g. 20261104T145012
 out = RUNS / run_id / "merged.csv"
 out.parent.mkdir(parents=True, exist_ok=True)
@@ -72,7 +73,7 @@ return {"merged_path": str(out), "n_merged": len(merged)}`,
   {
     id: 'make_subset',
     title: 'make_subset',
-    hint: 'Paste over the raise — identical to simple_loop_baseline_prep.py.',
+    hint: 'Paste over the raise — identical comments as the reference.',
     code: `run_id = context["ts_nodash"]
 out = RUNS / run_id / "subset.csv"
 df = pd.read_csv(merge_meta["merged_path"])
@@ -98,7 +99,7 @@ return {"recommended_drops": drops, "n_rows": len(df)}`,
   {
     id: 'train_baseline',
     title: 'train_baseline',
-    hint: 'Paste over the raise — identical to simple_loop_baseline_prep.py.',
+    hint: 'Paste over the raise — classroom numeric-only LogisticRegression.',
     code: `df = pd.read_csv(subset_meta["merged_path"])
 drops = list(profile_meta.get("recommended_drops") or [])
 y = df[TARGET]
@@ -122,7 +123,7 @@ return {"f1": f1, "n_train": len(X_train), "n_val": len(X_val)}`,
   {
     id: 'publish_merged',
     title: 'publish_merged',
-    hint: 'Paste over the raise — identical to simple_loop_baseline_prep.py.',
+    hint: 'Paste over the raise — publishes merged_latest.csv for the simple-loop UI.',
     code: `PUBLISH.parent.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(subset_meta["merged_path"], PUBLISH)
 return {
@@ -134,7 +135,19 @@ return {
   },
 ]
 
-export const WIRING_SNIPPET = `left = validate_customers()
+/** Full wiring block including the same header comments as the reference DAG. */
+export const WIRING_SNIPPET = `# -----------------------------------------------------------------------
+# WIRING = the dependency graph
+#
+# Calling a @task function here does NOT run the Python immediately.
+# It creates a node and an edge: "this task needs that task's XCom output".
+# Airflow's Graph tab is literally this block drawn as boxes + arrows.
+#
+#   validate_customers ─┐
+#                       ├─→ merge_csvs → make_subset → profile_light ─┐
+#   validate_transactions ┘                    └──────────────────────┼─→ train → publish
+# -----------------------------------------------------------------------
+left = validate_customers()
 right = validate_transactions()
 merged = merge_csvs(left, right)  # waits for BOTH validates
 demo = make_subset(merged)

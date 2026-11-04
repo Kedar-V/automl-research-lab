@@ -6,6 +6,7 @@ import {
   ReactFlow,
   ReactFlowProvider,
   applyNodeChanges,
+  useReactFlow,
   type Edge,
   type Node,
   type NodeChange,
@@ -32,9 +33,9 @@ export type SimpleLoopRuntime = Record<string, { status: SimpleNodeStatus; note?
 function edgeStyle(kind: string, animated: boolean): Partial<Edge> {
   const stroke = animated ? '#0d8f6e' : kind === 'data' ? '#5a7267' : '#14241e'
   return {
-    // Orthogonal routes with sharp corners — stays clean on the grid.
+    // Orthogonal only — axis-aligned nodes → straight segments; L for revise.
     type: 'step',
-    pathOptions: { offset: 12, borderRadius: 0 },
+    pathOptions: { offset: 0, borderRadius: 0 },
     animated,
     markerEnd: {
       type: MarkerType.ArrowClosed,
@@ -73,8 +74,12 @@ function SimpleLegend() {
   )
 }
 
-function initialNodes(): Node[] {
-  return SIMPLE_LOOP_NODES.map((n) => ({
+function initialNodes(visibleIds?: ReadonlySet<string> | null): Node[] {
+  const list =
+    visibleIds == null
+      ? SIMPLE_LOOP_NODES
+      : SIMPLE_LOOP_NODES.filter((n) => visibleIds.has(n.id))
+  return list.map((n) => ({
     id: n.id,
     type: 'simple',
     position: SIMPLE_LOOP_POSITIONS[n.id],
@@ -94,15 +99,36 @@ function LiveSimpleLoopGraphInner({
   activeNodeId,
   datasetLabel,
   targetColumn,
+  visibleNodeIds,
+  visibleEdgeKeys,
 }: {
   runtime: SimpleLoopRuntime
   activeNodeId: string | null
   datasetLabel?: string | null
   targetColumn?: string | null
+  /** undefined = full graph; array = only these visual ids (progressive student build). */
+  visibleNodeIds?: string[]
+  /** When set with progressive mode, only these `source->target` visual edges render. */
+  visibleEdgeKeys?: string[]
 }) {
+  const visibleIds = useMemo(
+    () => (visibleNodeIds === undefined ? null : new Set(visibleNodeIds)),
+    [visibleNodeIds],
+  )
+  const edgeKeySet = useMemo(
+    () => (visibleEdgeKeys === undefined ? null : new Set(visibleEdgeKeys)),
+    [visibleEdgeKeys],
+  )
+  const visibleKey = visibleNodeIds === undefined ? '*' : visibleNodeIds.slice().sort().join(',')
   const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [nodes, setNodes] = useState<Node[]>(initialNodes)
+  const [nodes, setNodes] = useState<Node[]>(() => initialNodes(visibleIds))
   const [expanded, setExpanded] = useState(false)
+  const { fitView } = useReactFlow()
+
+  useEffect(() => {
+    setNodes(initialNodes(visibleIds))
+    setSelectedId(null)
+  }, [visibleKey, visibleIds])
 
   useEffect(() => {
     if (!expanded) return
@@ -150,9 +176,13 @@ function LiveSimpleLoopGraphInner({
   }, [])
 
   const resetLayout = useCallback(() => {
-    setNodes(initialNodes())
+    setNodes(initialNodes(visibleIds))
     setSelectedId(null)
-  }, [])
+    // Next frame so React Flow measures snapped nodes before fitting.
+    requestAnimationFrame(() => {
+      fitView({ padding: 0.18, duration: 200 })
+    })
+  }, [visibleIds, fitView])
 
   const edges: Edge[] = useMemo(() => {
     const running = new Set(
@@ -160,7 +190,13 @@ function LiveSimpleLoopGraphInner({
         .filter(([, r]) => r.status === 'running')
         .map(([id]) => id),
     )
-    return SIMPLE_LOOP_EDGES.map((e) => {
+    return SIMPLE_LOOP_EDGES.filter((e) => {
+      if (visibleIds == null) return true
+      if (!visibleIds.has(e.source) || !visibleIds.has(e.target)) return false
+      // Progressive student build: only show edges they actually declared.
+      if (edgeKeySet != null) return edgeKeySet.has(`${e.source}->${e.target}`)
+      return true
+    }).map((e) => {
       const animated = running.has(e.target)
       return {
         id: e.id,
@@ -172,7 +208,7 @@ function LiveSimpleLoopGraphInner({
         ...edgeStyle(e.kind, animated),
       }
     })
-  }, [runtime])
+  }, [runtime, visibleIds, edgeKeySet])
 
   const onNodeClick: NodeMouseHandler = (_e, node) => {
     setSelectedId(node.id)
@@ -283,10 +319,65 @@ export function LiveSimpleLoopGraph(props: {
   activeNodeId: string | null
   datasetLabel?: string | null
   targetColumn?: string | null
+  visibleNodeIds?: string[]
+  visibleEdgeKeys?: string[]
 }) {
   return (
     <ReactFlowProvider>
       <LiveSimpleLoopGraphInner {...props} />
     </ReactFlowProvider>
   )
+}
+
+/** Expand LangGraph node names into visual ids used by simpleLoopConfig. */
+export function visualIdsFromLangGraphNodes(nodes: string[]): Set<string> {
+  const v = new Set<string>()
+  for (const n of nodes) {
+    v.add(n)
+    if (n === 'data_scientist') v.add('dataset')
+    if (n === 'judge') v.add('router')
+    if (n === 'memory_writer') v.add('research_memory')
+    if (n === 'holdout_eval') v.add('best_candidate')
+  }
+  return v
+}
+
+/** Map declared LangGraph edges onto visual `source->target` keys. */
+export function visualEdgeKeysFromLangGraph(
+  edges: { source: string; target: string }[],
+): string[] {
+  const keys = new Set<string>()
+  const add = (a: string, b: string) => keys.add(`${a}->${b}`)
+
+  for (const { source, target } of edges) {
+    const s = source === 'START' ? '__start__' : source
+    const t = target === 'END' ? '__end__' : target
+
+    if ((s === '__start__' || s === 'START') && t === 'data_scientist') {
+      add('dataset', 'data_scientist')
+    } else if (s === 'data_scientist' && t === 'hypothesis_generator') {
+      add('data_scientist', 'hypothesis_generator')
+    } else if (s === 'hypothesis_generator' && t === 'ml_engineer') {
+      add('hypothesis_generator', 'ml_engineer')
+    } else if (s === 'ml_engineer' && t === 'judge') {
+      add('ml_engineer', 'judge')
+    } else if (s === 'judge' && t === 'memory_writer') {
+      add('judge', 'router')
+      add('router', 'memory_writer')
+    } else if (s === 'memory_writer' && t === 'context_builder') {
+      add('memory_writer', 'research_memory')
+      add('research_memory', 'context_builder')
+    } else if (s === 'context_builder' && t === 'hypothesis_generator') {
+      add('context_builder', 'hypothesis_generator')
+    } else if (s === 'judge' && t === 'holdout_eval') {
+      add('judge', 'router')
+      add('router', 'best_candidate')
+      add('best_candidate', 'holdout_eval')
+    } else if (s === 'holdout_eval' && (t === '__end__' || t === 'END')) {
+      // terminal — no extra visual edge
+    } else {
+      add(s, t)
+    }
+  }
+  return Array.from(keys)
 }

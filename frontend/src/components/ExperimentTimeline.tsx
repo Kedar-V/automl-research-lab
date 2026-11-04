@@ -5,7 +5,17 @@ import {
   type LeadTrace,
   type SubagentTrace,
 } from '../lib/experimentTrace'
-import type { EventEnvelope, ExperimentEntry } from '../types/events'
+import {
+  SIMPLE_LOOP_AGENT_META,
+  type SimpleLoopAgentId,
+} from '../lib/simpleLoopAgents'
+import type { AgentCycleOutput, EventEnvelope, ExperimentEntry } from '../types/events'
+
+const AGENT_ORDER: SimpleLoopAgentId[] = [
+  'data_scientist',
+  'hypothesis_generator',
+  'ml_engineer',
+]
 
 export function ExperimentTimeline({
   experiments,
@@ -29,8 +39,7 @@ export function ExperimentTimeline({
         </p>
       </div>
       <p className="mb-4 text-sm text-mist">
-        Click an experiment to inspect the four leads, then open a lead to see its overall
-        output and every subagent that informed it.
+        Expand a cycle to inspect Data Scientist, Hypothesis, and ML Engineer outputs.
       </p>
 
       {experiments.length === 0 ? (
@@ -41,7 +50,13 @@ export function ExperimentTimeline({
         <ol className="space-y-3">
           {experiments.map((exp, i) => {
             const expanded = openExp === exp.experimentId
-            const leads = expanded
+            const hasSimpleAgents = Boolean(
+              exp.agentOutputs &&
+                (exp.agentOutputs.data_scientist ||
+                  exp.agentOutputs.hypothesis_generator ||
+                  exp.agentOutputs.ml_engineer),
+            )
+            const leads = expanded && !hasSimpleAgents
               ? buildLeadTraces(eventsForExperiment(traces, exp.experimentId, i === 0))
               : []
             return (
@@ -91,7 +106,30 @@ export function ExperimentTimeline({
                     </span>
                   </p>
 
-                  {expanded && (
+                  {expanded && hasSimpleAgents && (
+                    <div className="mt-4 space-y-2 border-t border-line pt-3">
+                      <p className="font-mono text-[10px] uppercase tracking-wider text-mist">
+                        Agents for {exp.experimentId}
+                      </p>
+                      {AGENT_ORDER.map((id) => (
+                        <AgentOutputPanel
+                          key={id}
+                          agentId={id}
+                          payload={exp.agentOutputs?.[id]}
+                          open={openLead === `${exp.experimentId}:${id}`}
+                          onToggle={() =>
+                            setOpenLead((cur) =>
+                              cur === `${exp.experimentId}:${id}`
+                                ? null
+                                : `${exp.experimentId}:${id}`,
+                            )
+                          }
+                        />
+                      ))}
+                    </div>
+                  )}
+
+                  {expanded && !hasSimpleAgents && (
                     <div className="mt-4 space-y-2 border-t border-line pt-3">
                       <p className="font-mono text-[10px] uppercase tracking-wider text-mist">
                         Four leads for {exp.experimentId}
@@ -119,6 +157,55 @@ export function ExperimentTimeline({
         </ol>
       )}
     </section>
+  )
+}
+
+function AgentOutputPanel({
+  agentId,
+  payload,
+  open,
+  onToggle,
+}: {
+  agentId: SimpleLoopAgentId
+  payload?: AgentCycleOutput
+  open: boolean
+  onToggle: () => void
+}) {
+  const meta = SIMPLE_LOOP_AGENT_META[agentId]
+  const status = payload ? (payload.status === 'failed' ? 'failed' : 'completed') : 'pending'
+  return (
+    <div className="border border-line bg-ink-2/40">
+      <button
+        type="button"
+        onClick={onToggle}
+        className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-teal/5"
+      >
+        <div>
+          <p className="text-sm font-medium text-paper">
+            <span className="mr-2 font-mono text-[10px] text-teal">{open ? '▾' : '▸'}</span>
+            {meta.title}
+          </p>
+          <p className="text-xs text-mist">{meta.role}</p>
+        </div>
+        <StatusPill status={status} />
+      </button>
+      {open && (
+        <div className="space-y-3 border-t border-line px-3 py-3">
+          {payload?.note && <p className="text-xs text-amber">{payload.note}</p>}
+          <p className="font-mono text-[10px] text-mist">
+            {payload?.used_llm ? `LLM · ${payload.model || 'configured'}` : 'Heuristic / pending'}
+          </p>
+          <div>
+            <p className="font-mono text-[10px] uppercase tracking-wider text-teal">Output</p>
+            {payload ? (
+              <JsonBlock value={payload.output ?? payload} />
+            ) : (
+              <p className="font-mono text-xs text-mist">No output yet for this agent.</p>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -253,7 +340,7 @@ function MetricRow({
     <div className="mt-2 flex flex-wrap gap-3 font-mono text-xs text-mist">
       {entries.map(([k, v]) => (
         <span key={k}>
-          {label} {k} <span className="text-paper">{v.toFixed(2)}</span>
+          {label} {k} <span className="text-paper">{Number(v).toFixed(2)}</span>
         </span>
       ))}
     </div>

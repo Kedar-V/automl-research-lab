@@ -5,9 +5,6 @@ const LINKS = [
   { to: '/guide', label: 'Guide' },
   { to: '/student-loop', label: 'Build Loop' },
   { to: '/simple-loop', label: 'Simple Loop' },
-  { to: '/architecture', label: 'Architecture' },
-  { to: '/orchestration', label: 'Orchestration' },
-  { to: '/recovery', label: 'Recovery' },
 ]
 
 export function AppNav() {
