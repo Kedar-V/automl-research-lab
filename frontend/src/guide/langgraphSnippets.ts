@@ -8,9 +8,6 @@ export interface Snippet {
   code: string
 }
 
-export const STACK_CMD = `make up
-cd frontend && npm install && npm run dev`
-
 export const STATUS_CMD = 'python -m student_loop.run_cli --status'
 
 export const NODE_SNIPPETS: Snippet[] = [

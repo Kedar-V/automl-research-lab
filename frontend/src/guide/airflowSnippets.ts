@@ -9,11 +9,6 @@ export interface Snippet {
   code: string
 }
 
-export const START_CMD =
-  'docker compose -f infra/docker-compose.yml --env-file .env --profile airflow up --build -d'
-
-export const ENV_CMD = 'cp .env.example .env'
-
 /** From repo root, with Airflow profile already up. */
 export const UNPAUSE_CMD =
   'docker compose -f infra/docker-compose.yml --env-file .env --profile airflow exec airflow-scheduler \\\n  airflow dags unpause student_baseline_prep'
