@@ -16,9 +16,9 @@ You can run the sections independently, or run Airflow first so `/simple-loop` c
 | Docker Desktop | Install from [docker.com](https://www.docker.com/products/docker-desktop/); leave it running | Same; use the WSL2 backend (recommended) |
 | Python 3.12+ | Homebrew / python.org | python.org installer; check **Add python.exe to PATH** |
 | Node.js 20+ | Homebrew / nodejs.org | nodejs.org LTS installer |
-| Make | Xcode CLT (`xcode-select --install`) or Homebrew | Optional — Windows steps below use `docker compose` / `npm` directly |
-| Git | Xcode CLT / Homebrew | [Git for Windows](https://git-scm.com/download/win) (includes Git Bash) |
-| Terminal | Terminal.app / iTerm | **PowerShell** or **Git Bash** |
+| Make | Xcode CLT (`xcode-select --install`) or Homebrew | [Git for Windows](https://git-scm.com/download/win) (Git Bash includes `make`) or `choco install make` |
+| Git | Xcode CLT / Homebrew | [Git for Windows](https://git-scm.com/download/win) |
+| Terminal | Terminal.app / iTerm | **Git Bash** for `make start-windows` / `make down-windows` |
 
 Do not install Airflow on the host. It runs only in Docker.
 
@@ -36,7 +36,7 @@ cp .env.example .env          # macOS / Git Bash
 # Copy-Item .env.example .env # Windows PowerShell
 ```
 
-`make start` / `make airflow` will create `.env` from `.env.example` if it is missing.
+`make start-mac` / `make start-windows` / `make airflow` will create `.env` from `.env.example` if it is missing.
 
 Edit `.env` as needed:
 
@@ -54,11 +54,24 @@ Keep secrets in `.env`. Never commit real keys.
 
 ## Quick start — web app (one command)
 
-Docker Desktop must be running. From the repo root:
+Docker Desktop must be running. From the **repo root**, pick your OS:
+
+| | macOS | Windows |
+| --- | --- | --- |
+| **Start** (Docker + UI) | `make start-mac` | `make start-windows` *(Git Bash)* |
+| **Stop** (Vite + Docker) | `make down-mac` | `make down-windows` *(Git Bash)* |
 
 ```bash
-make start
+# macOS
+make start-mac
+make down-mac
+
+# Windows (Git Bash)
+make start-windows
+make down-windows
 ```
+
+`make start` / `make down` alone print this reminder and exit — always use the `-mac` or `-windows` target.
 
 That will:
 
@@ -77,21 +90,7 @@ Useful routes once the UI is up:
 | [/simple-loop](http://127.0.0.1:5173/simple-loop) | Instructor mini-loop |
 | [/student-loop](http://127.0.0.1:5173/student-loop) | Student Build Loop lab |
 
-`Ctrl+C` stops Vite only. Tear down Docker with `make down`.
-
-### Windows — web app (no Make)
-
-```powershell
-if (-not (Test-Path .env)) { Copy-Item .env.example .env }
-docker compose -f infra/docker-compose.yml --env-file .env up --build -d
-# wait until this succeeds (retry for 1–2 min on first build):
-Invoke-RestMethod http://127.0.0.1:8000/healthz
-cd frontend
-npm install
-npm run dev
-```
-
-Open [http://127.0.0.1:5173](http://127.0.0.1:5173).
+`down-mac` frees `:5173` with `lsof`. `down-windows` frees `:5173` with PowerShell, then both run `docker compose … down`.
 
 ---
 
@@ -148,10 +147,11 @@ ls -la datasets/airflow/merged_latest.csv
 ls -la artifacts/airflow/runs/
 ```
 
-**Stop Airflow** (also stops the main stack if it was up):
+**Stop Airflow** (also stops the main stack + Vite if it was up):
 
 ```bash
-make down
+make down-mac          # macOS
+# make down-windows    # Windows (Git Bash)
 ```
 
 ### Windows — Airflow
@@ -203,7 +203,8 @@ More detail: [`airflow/README.md`](airflow/README.md) · data: [`datasets/airflo
 
 Goal: run the mini LangGraph loop at `/simple-loop`.
 
-**macOS:** `make start` (see Quick start) is enough — backend + UI.
+**macOS:** `make start-mac` (see Quick start) is enough — backend + UI.  
+**Windows:** `make start-windows` from Git Bash.
 
 Then open [http://127.0.0.1:5173/simple-loop](http://127.0.0.1:5173/simple-loop)
 
@@ -222,7 +223,7 @@ curl -s http://127.0.0.1:8000/simple-loop/info | python3 -m json.tool
 **Backend only** (no Vite): `make up` then `make health`  
 **Frontend only** (stack already up): `make frontend`
 
-**Stop:** `Ctrl+C` in the Vite terminal, then `make down`.
+**Stop:** `make down-mac` or `make down-windows` (Vite + Docker).
 
 **CLI only (optional)** — needs local install once: `make install`
 
@@ -235,7 +236,7 @@ curl -s http://127.0.0.1:8000/simple-loop/info | python3 -m json.tool
 
 ### Windows — simple loop
 
-Same as **Windows — web app** above, then open `/simple-loop`.
+`make start-windows` from Git Bash (see Quick start), then open `/simple-loop`.
 
 ```powershell
 foreach ($port in 8000,8011,8002,8003,8004,8005,8006) {
@@ -278,7 +279,7 @@ python -m venv .venv
 | 4 | (Optional reveal) `/simple-loop` | Instructor mini-loop on the same CSV |
 | 5 | (Later) `simple_loop_baseline_and_trigger` | Reveal how Airflow could call the loop |
 
-Guide UI: [http://127.0.0.1:5173/guide](http://127.0.0.1:5173/guide) after `make start`.
+Guide UI: [http://127.0.0.1:5173/guide](http://127.0.0.1:5173/guide) after `make start-mac` / `make start-windows`.
 
 ### Build Loop (student LangGraph)
 
@@ -306,17 +307,19 @@ After Airflow is up, open the UI and find `student_baseline_prep`. The Graph tab
 | Airflow UI | http://localhost:8088 |
 | MLflow (full stack) | http://127.0.0.1:5050 |
 
-## Make targets (macOS)
+## Make targets
 
-| Target | What |
-| --- | --- |
-| `make start` | Ensure `.env`, Docker stack, wait for gateway, Vite UI |
-| `make airflow` | Start Airflow profile (UI on :8088) |
-| `make up` | Docker stack only |
-| `make health` | Curl service `/healthz` ports |
-| `make frontend` | Vite only (stack already up) |
-| `make down` | Stop Docker (including Airflow profile) |
-| `make install` | Local `.venv` + editable install (CLI / tests) |
+| Target | OS | What |
+| --- | --- | --- |
+| `make start-mac` | macOS | Ensure `.env`, Docker stack, wait for gateway, Vite UI |
+| `make start-windows` | Windows (Git Bash) | Same as `start-mac` |
+| `make down-mac` | macOS | Stop Vite (`lsof` :5173) + Docker (incl. Airflow) |
+| `make down-windows` | Windows (Git Bash) | Stop Vite (PowerShell :5173) + Docker (incl. Airflow) |
+| `make airflow` | both | Start Airflow profile (UI on :8088) |
+| `make up` | both | Docker stack only |
+| `make health` | both | Curl service `/healthz` ports |
+| `make frontend` | both | Vite only (stack already up) |
+| `make install` | both | Local `.venv` + editable install (CLI / tests) |
 
 ---
 
@@ -326,15 +329,14 @@ After Airflow is up, open the UI and find `student_baseline_prep`. The Graph tab
 
 ```bash
 cp .env.example .env   # set MOCK_*=false for live research
-make start
+make start-mac
 ```
 
-### Windows (PowerShell)
+### Windows (Git Bash)
 
-```powershell
-Copy-Item .env.example .env   # then edit MOCK_*=false for live research
-docker compose -f infra/docker-compose.yml --env-file .env up --build -d
-cd frontend; npm install; npm run dev
+```bash
+cp .env.example .env   # then edit MOCK_*=false for live research
+make start-windows
 ```
 
 Upload `datasets/churn_sample.csv`, target `churned`.  

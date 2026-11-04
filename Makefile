@@ -3,13 +3,34 @@ VENV := .venv
 PYTHON := $(VENV)/bin/python
 PIP := $(VENV)/bin/pip
 
-.PHONY: ensure-env up down logs test install health venv demo-sse rebuild-gateway frontend start airflow
+.PHONY: ensure-env up down down-mac down-windows logs test install health venv \
+	demo-sse rebuild-gateway frontend start start-mac start-windows airflow
 
 ensure-env:
 	@test -f .env || (cp .env.example .env && echo "Created .env from .env.example")
 
-# One command: Docker stack + Vite UI (blocks on npm run dev).
-start: ensure-env
+# ---------------------------------------------------------------------------
+# Web app — pick your OS (start is the same; down kills Vite differently)
+# ---------------------------------------------------------------------------
+
+start:
+	@echo ""
+	@echo "  Use one of:"
+	@echo "    make start-mac        # macOS"
+	@echo "    make start-windows    # Windows (run from Git Bash)"
+	@echo ""
+	@exit 1
+
+down:
+	@echo ""
+	@echo "  Use one of:"
+	@echo "    make down-mac         # macOS (kills Vite via lsof + Docker down)"
+	@echo "    make down-windows     # Windows (kills Vite via PowerShell + Docker down)"
+	@echo ""
+	@exit 1
+
+# Docker stack + Vite UI (blocks on npm run dev). Same on both OSes.
+start-mac: ensure-env
 	$(COMPOSE) up --build -d
 	@echo "Waiting for gateway on :8000..."
 	@i=0; while [ $$i -lt 36 ]; do \
@@ -17,8 +38,12 @@ start: ensure-env
 	  i=$$((i+1)); sleep 5; \
 	  if [ $$i -eq 36 ]; then echo "gateway not ready — try: make health / make logs"; exit 1; fi; \
 	done
-	@echo "Open http://127.0.0.1:5173  (Ctrl+C stops Vite; stack stays up — make down to stop Docker)"
+	@echo "Open http://127.0.0.1:5173"
+	@echo "Stop with:  make down-mac  (macOS)  or  make down-windows  (Windows)"
 	cd frontend && npm install && npm run dev
+
+# Same as start-mac. On Windows: run from Git Bash (needs curl + Make).
+start-windows: start-mac
 
 frontend:
 	cd frontend && npm run dev
@@ -39,7 +64,13 @@ airflow: ensure-env
 	@echo "Airflow starting (often 1–2 min). Check: $(COMPOSE) --profile airflow ps"
 	@echo "UI: http://localhost:8088  (admin / admin unless .env overrides)"
 
-down: ensure-env
+down-mac: ensure-env
+	@-pids=$$(lsof -tiTCP:5173 -sTCP:LISTEN 2>/dev/null); \
+	if [ -n "$$pids" ]; then echo "Stopping Vite on :5173 ($$pids)"; kill $$pids 2>/dev/null || true; fi
+	$(COMPOSE) --profile airflow down
+
+down-windows: ensure-env
+	@powershell.exe -NoProfile -Command "Get-NetTCPConnection -LocalPort 5173 -State Listen -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('Stopping Vite on :5173 (PID ' + $$_.OwningProcess + ')'); Stop-Process -Id $$_.OwningProcess -Force -ErrorAction SilentlyContinue }"
 	$(COMPOSE) --profile airflow down
 
 logs: ensure-env
