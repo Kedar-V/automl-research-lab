@@ -2,9 +2,11 @@
 
 Classroom sequence:
 
-1. **Airflow alone (DAG 1)** — merge two CSVs → **subset** → train baseline → publish subset
-2. **Simple loop alone** — run `/simple-loop` on `merged_latest.csv`
-3. **Reveal DAG 2** — same prep + stub that will later trigger the loop from Airflow
+1. **Student DAG lab** — edit [`dags/student_baseline_prep.py`](dags/student_baseline_prep.py): fill task bodies, then wire deps. Graph tab stays **empty until wired**.
+2. **Instructor reveal (DAG 1)** — `simple_loop_baseline_prep`: merge → **subset** → train baseline → publish subset
+3. **LangGraph Build Loop** — `/student-loop` on the published CSV (or Titanic)
+4. **Instructor reveal** — `/simple-loop` (filled `mini_loop`)
+5. **Reveal DAG 2** — same prep + stub that will later trigger the loop from Airflow
 
 Everything runs in **Docker**. Do not install Airflow on the host.
 
@@ -30,10 +32,13 @@ DAGs:
 
 | DAG id | What it does |
 | --- | --- |
-| `simple_loop_baseline_prep` | Merge → **make_subset** (default 2000 rows) → baseline → publish → **stop** |
+| `student_baseline_prep` | **Student lab** — stubs + empty Graph until wiring is uncommented |
+| `simple_loop_baseline_prep` | Instructor: Merge → **make_subset** (default 2000 rows) → baseline → publish → **stop** |
 | `simple_loop_baseline_and_trigger` | Same prep → **`trigger_simple_loop` stub** (no HTTP yet) |
 
-Unpause DAG 1 in the UI and Trigger.
+Student path: implement `@task` bodies in `student_baseline_prep.py` (copy from [`dags/COPY_GUIDE.md`](dags/COPY_GUIDE.md) or `simple_loop_baseline_prep.py`), uncomment the wiring block, refresh the Graph tab, then Trigger.
+
+Instructor path: unpause `simple_loop_baseline_prep` and Trigger.
 
 ### One-shot prep without the UI (still Docker)
 
@@ -61,7 +66,9 @@ With the main stack up (`gateway` + frontend):
 ## DAG 2 reveal (later)
 
 `trigger_simple_loop` currently logs a stub payload pointing at `http://gateway:8000`.  
-When you reveal the connection, replace [`task_trigger_simple_loop_stub`](dags/_shared_baseline_prep.py) with a real `POST /simple-loop/run` using `merged_latest.csv` / XCom paths.
+When you reveal the connection, replace that stub in [`dags/simple_loop_baseline_and_trigger.py`](dags/simple_loop_baseline_and_trigger.py) with a real `POST /simple-loop/run`.
+
+Each DAG under `dags/` is **one file**: pandas/sklearn logic sits inside `@task` bodies. No helper modules, no `mini_loop` imports.
 
 ## Stop
 

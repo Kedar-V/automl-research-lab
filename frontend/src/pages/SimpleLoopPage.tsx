@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
   listSimpleLoopDatasets,
+  listSimpleLoopModels,
   listSimpleLoopRuns,
   uploadSimpleLoopDataset,
   type SimpleLoopDataset,
+  type SimpleLoopModel,
   type SimpleLoopRunRecord,
 } from '../api/gateway'
 import { BestVsPrevious } from '../components/BestVsPrevious'
@@ -137,6 +139,8 @@ export function SimpleLoopPage() {
   const [holdoutScore, setHoldoutScore] = useState<number | null>(null)
   const [runHistory, setRunHistory] = useState<SimpleLoopRunRecord[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
+  const [models, setModels] = useState<SimpleLoopModel[]>([])
+  const [modelId, setModelId] = useState('')
   const sourceRef = useRef<EventSource | null>(null)
   const runningRef = useRef(false)
   const cycleRef = useRef(0)
@@ -177,6 +181,16 @@ export function SimpleLoopPage() {
         if (!cancelled) {
           setError(err instanceof Error ? err.message : 'Failed to load dataset catalog')
         }
+      }
+    })()
+    ;(async () => {
+      try {
+        const catalog = await listSimpleLoopModels()
+        if (cancelled) return
+        setModels(catalog.models ?? [])
+        setModelId((prev) => prev || catalog.default || catalog.models?.[0]?.id || '')
+      } catch {
+        // Non-fatal — keep empty and let run use gateway default
       }
     })()
     void refreshHistory()
@@ -260,6 +274,7 @@ export function SimpleLoopPage() {
       target_score: String(targetScore),
       max_cycles: String(maxCycles),
     })
+    if (modelId.trim()) params.set('model', modelId.trim())
     const source = new EventSource(`/api/simple-loop/stream?${params.toString()}`)
     sourceRef.current = source
 
@@ -443,6 +458,7 @@ export function SimpleLoopPage() {
     datasetFilename,
     datasetPath,
     maxCycles,
+    modelId,
     refreshHistory,
     resetRuntime,
     targetColumn,
@@ -517,6 +533,52 @@ export function SimpleLoopPage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          <label className="flex items-center gap-2 text-sm text-mist">
+            Model
+            <select
+              value={modelId}
+              onChange={(e) => setModelId(e.target.value)}
+              disabled={busy || models.length === 0}
+              className="max-w-[18rem] border border-line bg-ink-2 px-2 py-1.5 font-mono text-xs text-paper"
+              title="LLM used by simple-loop agents"
+            >
+              {models.length === 0 && <option value="">Loading models…</option>}
+              {models.some((m) => m.provider === 'cursor') && (
+                <optgroup label="Cursor SDK">
+                  {models
+                    .filter((m) => m.provider === 'cursor')
+                    .map((m) => (
+                      <option key={m.id} value={m.id} disabled={m.available === false}>
+                        {m.name}
+                        {m.available === false ? ' (set CURSOR_API_KEY)' : ''}
+                      </option>
+                    ))}
+                </optgroup>
+              )}
+              {models.some((m) => m.provider !== 'cursor' && m.free) && (
+                <optgroup label="OpenRouter (free)">
+                  {models
+                    .filter((m) => m.provider !== 'cursor' && m.free)
+                    .map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name}
+                      </option>
+                    ))}
+                </optgroup>
+              )}
+              {models.some((m) => m.provider !== 'cursor' && !m.free) && (
+                <optgroup label="OpenRouter">
+                  {models
+                    .filter((m) => m.provider !== 'cursor' && !m.free)
+                    .map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name}
+                      </option>
+                    ))}
+                </optgroup>
+              )}
+            </select>
+          </label>
           <label className="flex items-center gap-2 text-sm text-mist">
             Target score
             <input

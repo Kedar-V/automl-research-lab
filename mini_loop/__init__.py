@@ -1,1 +1,1 @@
-"""Teaching simple research loop (LangGraph + isolated node scripts)."""
+"""Teaching simple research loop — self-contained LangGraph in graph.py."""

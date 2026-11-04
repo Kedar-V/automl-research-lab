@@ -198,6 +198,23 @@ export interface SimpleLoopDataset {
   bytes?: number
 }
 
+export interface SimpleLoopModel {
+  id: string
+  name: string
+  free: boolean
+  provider?: 'cursor' | 'openrouter' | string
+  available?: boolean
+}
+
+export async function listSimpleLoopModels(): Promise<{
+  default: string
+  models: SimpleLoopModel[]
+  key_configured: boolean
+  cursor_configured?: boolean
+}> {
+  return json(await fetch(`${BASE}/simple-loop/models`))
+}
+
 export async function listSimpleLoopDatasets(): Promise<SimpleLoopDataset[]> {
   const body = await json<{ datasets: SimpleLoopDataset[] }>(
     await fetch(`${BASE}/simple-loop/datasets`),
@@ -237,6 +254,19 @@ export async function listSimpleLoopRuns(limit = 50): Promise<SimpleLoopRunRecor
 
 export async function getSimpleLoopRun(runId: string): Promise<SimpleLoopRunRecord> {
   return json(await fetch(`${BASE}/simple-loop/runs/${encodeURIComponent(runId)}`))
+}
+
+export interface StudentLoopStatus {
+  root: string
+  available: boolean
+  ready: boolean
+  nodes: string[]
+  missing_nodes: string[]
+  error: string | null
+}
+
+export async function getStudentLoopStatus(): Promise<StudentLoopStatus> {
+  return json(await fetch(`${BASE}/student-loop/status`))
 }
 
 export async function pauseSession(sessionId: string) {

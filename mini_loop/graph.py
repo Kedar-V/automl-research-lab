@@ -1,26 +1,37 @@
-"""Simple research loop — LangGraph orchestration.
+"""Simple research loop — one self-contained LangGraph file.
 
-Every node shells out to an isolated script under mini_loop/nodes/.
-Router is a plain conditional edge (accept / revise / stop).
-Does not touch services/orchestrator/app/graph.py.
+Flow:
+  START → data_scientist → hypothesis → ml_engineer → judge
+            ↑__________________________________|
+            |   (revise: memory → context → hypothesis again)
+            └── accept/stop → holdout_eval → END
+
+No helper modules. No subprocess nodes. All logic is in the node functions below.
 """
 
 from __future__ import annotations
 
 import json
 import operator
-import subprocess
-import sys
 from pathlib import Path
 from typing import Annotated, TypedDict
 
+import pandas as pd
 from langgraph.graph import END, START, StateGraph
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import f1_score
+from sklearn.model_selection import train_test_split
 
 ROOT = Path(__file__).resolve().parent
-NODES = ROOT / "nodes"
 REPO = ROOT.parent
 
 
+# ---------------------------------------------------------------------------
+# STATE
+# LangGraph keeps one shared dict ("state") that every node reads/writes.
+# Each node returns a *patch* — only the keys it wants to update.
+# Annotated[list, operator.add] means "append to steps" instead of replace.
+# ---------------------------------------------------------------------------
 class SimpleLoopState(TypedDict, total=False):
     dataset_path: str
     target_column: str
@@ -29,6 +40,7 @@ class SimpleLoopState(TypedDict, total=False):
     cycle: int
     seed: int
     holdout_frac: float
+    model: str  # optional OpenRouter id (unused in this heuristic demo)
     profile: dict
     brief: dict
     experiment_spec: dict
@@ -42,207 +54,214 @@ class SimpleLoopState(TypedDict, total=False):
     steps: Annotated[list, operator.add]
 
 
-def _run_node(script: str, payload: dict, timeout: int = 180) -> dict:
-    path = NODES / script
-    proc = subprocess.run(
-        [sys.executable, str(path)],
-        input=json.dumps(payload, default=str),
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        cwd=str(ROOT),
-    )
-    raw = (proc.stdout or "").strip()
-    if not raw:
-        raise RuntimeError(
-            f"{script} produced no stdout (code={proc.returncode}): {(proc.stderr or '')[:500]}"
-        )
-    # Last JSON object line
-    data = None
-    for line in reversed(raw.splitlines()):
-        line = line.strip()
-        if line.startswith("{") and line.endswith("}"):
-            data = json.loads(line)
-            break
-    if data is None:
-        data = json.loads(raw)
-    data["_returncode"] = proc.returncode
-    data["_stderr"] = (proc.stderr or "")[:500] or None
-    return data
+# ---------------------------------------------------------------------------
+# NODES
+# A node is a plain function: state in → dict patch out.
+# LangGraph calls it, merges the patch into state, then follows an edge.
+# ---------------------------------------------------------------------------
 
 
 def node_data_scientist(state: SimpleLoopState) -> dict:
-    out = _run_node(
-        "data_scientist.py",
-        {
-            "dataset_path": state["dataset_path"],
-            "target_column": state["target_column"],
-        },
-    )
+    """Read the CSV once and describe columns (no LLM)."""
+    df = pd.read_csv(state["dataset_path"])
+    target = state["target_column"]
+    drops = [
+        c
+        for c in df.columns
+        if c != target
+        and (
+            c.lower().endswith("_id")
+            or c.lower() in {"passengerid", "name", "ticket", "cabin", "timestamp", "fraud_probability"}
+        )
+    ]
+    nums = [
+        c
+        for c in df.columns
+        if c != target and c not in drops and pd.api.types.is_numeric_dtype(df[c])
+    ]
+    profile = {
+        "n_rows": len(df),
+        "n_columns": len(df.columns),
+        "target": target,
+        "target_rate": float(df[target].mean()) if pd.api.types.is_numeric_dtype(df[target]) else None,
+        "numeric_features": nums,
+        "recommended_drops": drops,
+    }
     return {
-        "profile": out.get("profile") or {},
-        "steps": [
-            {
-                "node": "data_scientist",
-                "used_llm": out.get("used_llm"),
-                "note": out.get("note"),
-            }
-        ],
+        "profile": profile,
+        "steps": [{"node": "data_scientist", "note": f"profiled {len(df)} rows"}],
     }
 
 
 def node_hypothesis(state: SimpleLoopState) -> dict:
-    out = _run_node(
-        "hypothesis_generator.py",
-        {
-            "profile": state.get("profile") or {},
-            "brief": state.get("brief") or {},
-            "history": (state.get("memory") or {}).get("history")
-            or (state.get("brief") or {}).get("history")
-            or [],
-        },
-    )
+    """Propose one tiny experiment (vary C each cycle)."""
+    profile = state.get("profile") or {}
+    cycle = int(state.get("cycle") or 0)
+    c_values = [0.25, 1.0, 4.0]
+    spec = {
+        "experiment_id": f"exp-{cycle + 1}",
+        "model_family": "logistic_regression",
+        "hyperparameters": {"C": c_values[cycle % len(c_values)], "max_iter": 500},
+        "drop_columns": list(profile.get("recommended_drops") or []),
+        "rationale": f"try C={c_values[cycle % len(c_values)]}",
+    }
     return {
-        "experiment_spec": out.get("experiment_spec") or {},
-        "steps": [
-            {
-                "node": "hypothesis_generator",
-                "used_llm": out.get("used_llm"),
-                "note": out.get("note"),
-                "spec": out.get("experiment_spec"),
-            }
-        ],
+        "experiment_spec": spec,
+        "steps": [{"node": "hypothesis_generator", "note": spec["rationale"], "spec": spec}],
     }
 
 
 def node_ml_engineer(state: SimpleLoopState) -> dict:
-    out = _run_node(
-        "ml_engineer.py",
-        {
-            "dataset_path": state["dataset_path"],
-            "target_column": state["target_column"],
-            "experiment_spec": state.get("experiment_spec") or {},
-            "seed": state.get("seed", 42),
-            "holdout_frac": state.get("holdout_frac", 0.2),
-            "repair_budget": 3,
-        },
-        timeout=240,
+    """Train on train/val only. Holdout rows are split away and NOT scored here."""
+    df = pd.read_csv(state["dataset_path"])
+    target = state["target_column"]
+    spec = dict(state.get("experiment_spec") or {})
+    drops = [c for c in (spec.get("drop_columns") or []) if c in df.columns and c != target]
+    seed = int(state.get("seed") or 42)
+    holdout_frac = float(state.get("holdout_frac") or 0.2)
+
+    y = df[target]
+    X = df.drop(columns=[target, *drops], errors="ignore").select_dtypes("number").fillna(0)
+    strat = y if y.nunique() > 1 else None
+    # First cut seals the holdout (unused until holdout_eval)
+    X_tmp, _X_hold, y_tmp, _y_hold = train_test_split(
+        X, y, test_size=holdout_frac, random_state=seed, stratify=strat
     )
-    result = out.get("execution_result") or {}
-    spec = out.get("experiment_spec") or state.get("experiment_spec") or {}
-    f1 = float((result.get("validation_metrics") or {}).get("f1") or -1)
-    best_f1 = float(state.get("best_val_f1") or -1)
+    X_train, X_val, y_train, y_val = train_test_split(
+        X_tmp, y_tmp, test_size=0.25, random_state=seed, stratify=y_tmp if y_tmp.nunique() > 1 else None
+    )
+
+    hp = dict(spec.get("hyperparameters") or {})
+    clf = LogisticRegression(
+        C=float(hp.get("C", 1.0)),
+        max_iter=int(hp.get("max_iter", 500)),
+        class_weight="balanced",
+    )
+    clf.fit(X_train, y_train)
+    f1 = float(f1_score(y_val, clf.predict(X_val), zero_division=0))
+
+    result = {
+        "status": "succeeded",
+        "experiment_id": spec.get("experiment_id"),
+        "model_family": spec.get("model_family"),
+        "validation_metrics": {"f1": f1},
+        "n_train": len(X_train),
+        "n_val": len(X_val),
+        "n_holdout": len(_X_hold),
+    }
+    cycle = int(state.get("cycle") or 0) + 1
     patch: dict = {
         "execution_result": result,
-        "experiment_spec": spec,
-        "cycle": int(state.get("cycle") or 0) + 1,
-        "steps": [
-            {
-                "node": "ml_engineer",
-                "repaired": out.get("repaired"),
-                "used_llm_repair": out.get("used_llm_repair"),
-                "note": out.get("note"),
-                "f1": (result.get("validation_metrics") or {}).get("f1"),
-                "experiment_id": result.get("experiment_id") or spec.get("experiment_id"),
-                "model_family": result.get("model_family") or spec.get("model_family"),
-                "validation_metrics": result.get("validation_metrics") or {},
-                "duration_seconds": result.get("duration_sec"),
-                "status": result.get("status") or "succeeded",
-            }
-        ],
+        "cycle": cycle,
+        "steps": [{"node": "ml_engineer", "note": f"f1={f1:.3f}", "f1": f1}],
     }
-    if f1 > best_f1:
+    if f1 > float(state.get("best_val_f1") or -1):
         patch["best_val_f1"] = f1
         patch["best_spec"] = spec
     return patch
 
 
 def node_judge(state: SimpleLoopState) -> dict:
-    out = _run_node(
-        "judge.py",
-        {
-            "execution_result": state.get("execution_result") or {},
-            "experiment_spec": state.get("experiment_spec") or {},
-            "target_score": state.get("target_score", 0.8),
-            "brief": state.get("brief") or {},
-        },
-    )
+    """Decide accept (good enough) vs revise (try again)."""
+    result = state.get("execution_result") or {}
+    f1 = float((result.get("validation_metrics") or {}).get("f1") or 0)
+    target = float(state.get("target_score") or 0.8)
+    action = "accept" if f1 >= target else "revise"
+    verdict = {"action": action, "observation": f"val f1={f1:.3f} vs target {target}"}
     return {
-        "verdict": out.get("verdict") or {},
-        "steps": [
-            {
-                "node": "judge",
-                "used_llm": out.get("used_llm"),
-                "note": out.get("note"),
-                "verdict": out.get("verdict"),
-            }
-        ],
+        "verdict": verdict,
+        "steps": [{"node": "judge", "note": action, "verdict": verdict}],
     }
 
 
 def node_memory_writer(state: SimpleLoopState) -> dict:
-    out = _run_node(
-        "memory_writer.py",
+    """Append this cycle's lesson so the next hypothesis can see history."""
+    mem = dict(state.get("memory") or {"history": [], "findings": [], "lessons": []})
+    hist = list(mem.get("history") or [])
+    hist.append(
         {
-            "experiment_spec": state.get("experiment_spec") or {},
-            "execution_result": state.get("execution_result") or {},
-            "verdict": state.get("verdict") or {},
-        },
+            "cycle": state.get("cycle"),
+            "spec": state.get("experiment_spec"),
+            "f1": (state.get("execution_result") or {}).get("validation_metrics", {}).get("f1"),
+            "verdict": state.get("verdict"),
+        }
     )
-    return {
-        "memory": out.get("memory") or {},
-        "steps": [{"node": "memory_writer", "note": out.get("note")}],
-    }
+    mem["history"] = hist
+    lessons = list(mem.get("lessons") or [])
+    lessons.append(str((state.get("verdict") or {}).get("observation") or ""))
+    mem["lessons"] = lessons
+    return {"memory": mem, "steps": [{"node": "memory_writer", "note": "filed lesson"}]}
 
 
 def node_context_builder(state: SimpleLoopState) -> dict:
-    out = _run_node(
-        "context_builder.py",
-        {
-            "profile": state.get("profile") or {},
-            "memory": state.get("memory") or {},
-        },
-    )
-    return {
-        "brief": out.get("brief") or {},
-        "steps": [{"node": "context_builder", "note": out.get("note")}],
+    """Build a short brief for the next hypothesis from recent memory."""
+    mem = state.get("memory") or {}
+    brief = {
+        "history": mem.get("history") or [],
+        "lessons": (mem.get("lessons") or [])[-3:],
     }
+    return {"brief": brief, "steps": [{"node": "context_builder", "note": "next brief"}]}
 
 
 def node_holdout(state: SimpleLoopState) -> dict:
-    best = state.get("best_spec") or state.get("experiment_spec") or {}
-    out = _run_node(
-        "holdout_eval.py",
-        {
-            "dataset_path": state["dataset_path"],
-            "target_column": state["target_column"],
-            "best_spec": best,
-            "seed": state.get("seed", 42),
-            "holdout_frac": state.get("holdout_frac", 0.2),
-        },
-        timeout=240,
+    """Score the best spec ONCE on the sealed holdout (same seed as ml_engineer)."""
+    df = pd.read_csv(state["dataset_path"])
+    target = state["target_column"]
+    spec = state.get("best_spec") or state.get("experiment_spec") or {}
+    drops = [c for c in (spec.get("drop_columns") or []) if c in df.columns and c != target]
+    seed = int(state.get("seed") or 42)
+    holdout_frac = float(state.get("holdout_frac") or 0.2)
+
+    y = df[target]
+    X = df.drop(columns=[target, *drops], errors="ignore").select_dtypes("number").fillna(0)
+    strat = y if y.nunique() > 1 else None
+    X_tmp, X_hold, y_tmp, y_hold = train_test_split(
+        X, y, test_size=holdout_frac, random_state=seed, stratify=strat
     )
+    hp = dict(spec.get("hyperparameters") or {})
+    clf = LogisticRegression(
+        C=float(hp.get("C", 1.0)),
+        max_iter=int(hp.get("max_iter", 500)),
+        class_weight="balanced",
+    )
+    clf.fit(X_tmp, y_tmp)
+    f1 = float(f1_score(y_hold, clf.predict(X_hold), zero_division=0))
+    metrics = {"f1": f1, "n_holdout": len(X_hold)}
     return {
-        "holdout_metrics": out.get("holdout_metrics") or {},
-        "stop_reason": state.get("stop_reason") or "finalize",
-        "steps": [{"node": "holdout_eval", "note": out.get("note"), "metrics": out.get("holdout_metrics")}],
+        "holdout_metrics": metrics,
+        "stop_reason": "finalize",
+        "steps": [{"node": "holdout_eval", "note": "sealed holdout", "metrics": metrics}],
     }
 
 
 def route_after_judge(state: SimpleLoopState) -> str:
-    """Router (plain code): accept → holdout; revise/reject → memory; else holdout."""
+    """Router = plain code (not an LLM). Return a key from conditional_edges.
+
+    accept              → holdout
+    revise + budget left → memory (loop)
+    otherwise           → holdout
+    """
     action = str((state.get("verdict") or {}).get("action") or "stop")
     cycle = int(state.get("cycle") or 0)
     max_cycles = int(state.get("max_cycles") or 3)
     if action == "accept":
         return "holdout"
-    if action in {"revise", "reject"} and cycle < max_cycles:
+    if action == "revise" and cycle < max_cycles:
         return "memory"
     return "holdout"
 
 
+# ---------------------------------------------------------------------------
+# GRAPH WIRING
+# StateGraph = the canvas.
+# add_node(name, fn) = put a box on the canvas.
+# add_edge(a, b)     = always go a → b after a finishes.
+# add_conditional_edges = ask a router function which named edge to take.
+# compile()          = freeze the graph into a runnable app (invoke / stream).
+# ---------------------------------------------------------------------------
 def build_graph():
     g = StateGraph(SimpleLoopState)
+
     g.add_node("data_scientist", node_data_scientist)
     g.add_node("hypothesis_generator", node_hypothesis)
     g.add_node("ml_engineer", node_ml_engineer)
@@ -264,9 +283,57 @@ def build_graph():
         },
     )
     g.add_edge("memory_writer", "context_builder")
-    g.add_edge("context_builder", "hypothesis_generator")
+    g.add_edge("context_builder", "hypothesis_generator")  # loop back
     g.add_edge("holdout_eval", END)
     return g.compile()
+
+
+
+REQUIRED_NODES = frozenset(
+    {
+        "data_scientist",
+        "hypothesis_generator",
+        "ml_engineer",
+        "judge",
+        "memory_writer",
+        "context_builder",
+        "holdout_eval",
+    }
+)
+
+
+def assess_graph_ready(app) -> dict:
+    """Return readiness dict from a compiled LangGraph app."""
+    raw = app.get_graph().nodes
+    present = {n for n in raw if n not in {START, END, "__start__", "__end__"}}
+    missing = sorted(REQUIRED_NODES - present)
+    return {
+        "ready": not missing,
+        "nodes": sorted(present),
+        "missing_nodes": missing,
+        "error": None if not missing else f"missing nodes: {', '.join(missing)}",
+    }
+
+
+def get_status() -> dict:
+    """Import-safe status for the gateway / UI."""
+    try:
+        app = build_graph()
+    except NotImplementedError as exc:
+        return {
+            "ready": False,
+            "nodes": [],
+            "missing_nodes": sorted(REQUIRED_NODES),
+            "error": str(exc) or "build_graph not implemented",
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ready": False,
+            "nodes": [],
+            "missing_nodes": sorted(REQUIRED_NODES),
+            "error": str(exc),
+        }
+    return assess_graph_ready(app)
 
 
 def _initial_state(
@@ -277,11 +344,9 @@ def _initial_state(
     max_cycles: int,
     seed: int,
     holdout_frac: float,
+    model: str | None = None,
 ) -> SimpleLoopState:
-    mem_path = ROOT / "memory" / "research_memory.json"
-    mem_path.parent.mkdir(parents=True, exist_ok=True)
-    mem_path.write_text(json.dumps({"history": [], "findings": [], "lessons": []}, indent=2))
-    return {
+    state: SimpleLoopState = {
         "dataset_path": str(Path(dataset_path).resolve()),
         "target_column": target_column,
         "target_score": target_score,
@@ -294,6 +359,9 @@ def _initial_state(
         "memory": {"history": [], "findings": [], "lessons": []},
         "brief": {},
     }
+    if model and str(model).strip():
+        state["model"] = str(model).strip()
+    return state
 
 
 def _finalize_payload(final: dict) -> dict:
@@ -320,7 +388,9 @@ def run_simple_loop(
     max_cycles: int = 3,
     seed: int = 42,
     holdout_frac: float = 0.2,
+    model: str | None = None,
 ) -> dict:
+    """Run the whole graph to completion; return a summary dict."""
     app = build_graph()
     initial = _initial_state(
         dataset_path=dataset_path,
@@ -329,6 +399,7 @@ def run_simple_loop(
         max_cycles=max_cycles,
         seed=seed,
         holdout_frac=holdout_frac,
+        model=model,
     )
     final = app.invoke(initial, config={"recursion_limit": 8 + max_cycles * 6})
     return _finalize_payload(final)
@@ -342,12 +413,9 @@ def stream_simple_loop(
     max_cycles: int = 3,
     seed: int = 42,
     holdout_frac: float = 0.2,
+    model: str | None = None,
 ):
-    """Yield live graph events for the Control Center-style UI.
-
-    Event shapes:
-      {type: node_started|node_completed|router|run_completed|error, ...}
-    """
+    """Yield UI events as each node starts/finishes (used by the gateway SSE)."""
     app = build_graph()
     initial = _initial_state(
         dataset_path=dataset_path,
@@ -356,13 +424,21 @@ def stream_simple_loop(
         max_cycles=max_cycles,
         seed=seed,
         holdout_frac=holdout_frac,
+        model=model,
     )
-    yield {"type": "run_started", "dataset_path": str(Path(dataset_path).resolve()), "target_column": target_column}
+    yield {
+        "type": "run_started",
+        "dataset_path": str(Path(dataset_path).resolve()),
+        "target_column": target_column,
+        "model": initial.get("model"),
+    }
 
     merged: dict = dict(initial)
     last_node: str | None = None
     try:
-        for update in app.stream(initial, stream_mode="updates", config={"recursion_limit": 8 + max_cycles * 6}):
+        for update in app.stream(
+            initial, stream_mode="updates", config={"recursion_limit": 8 + max_cycles * 6}
+        ):
             if not isinstance(update, dict):
                 continue
             for node_name, patch in update.items():

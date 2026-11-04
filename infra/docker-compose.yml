@@ -67,12 +67,15 @@ services:
       PROJECT_DATA_DIR: /data/projects
       SIMPLE_LOOP_RUNS_PATH: /data/simple_loop/runs.json
       MINI_LOOP_ROOT: /mini_loop
+      STUDENT_LOOP_ROOT: /student_loop
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
-      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-xingchen-agi/xing4.0-29b-a4b:free}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-nvidia/nemotron-3.5-lightning:free}
+      CURSOR_API_KEY: ${CURSOR_API_KEY:-}
     volumes:
       # rw so uploaded CSVs can be reused via the prior-datasets dropdown
       - ../datasets:/bundled
       - ../mini_loop:/mini_loop
+      - ../student_loop:/student_loop
       - ../mocks/recordings:/app/mocks/recordings:ro
       - project_data:/data/projects
       - simple_loop_data:/data/simple_loop

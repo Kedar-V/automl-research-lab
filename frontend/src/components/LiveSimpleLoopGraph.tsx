@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   Background,
   Controls,
@@ -102,6 +102,21 @@ function LiveSimpleLoopGraphInner({
 }) {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [nodes, setNodes] = useState<Node[]>(initialNodes)
+  const [expanded, setExpanded] = useState(false)
+
+  useEffect(() => {
+    if (!expanded) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setExpanded(false)
+    }
+    window.addEventListener('keydown', onKey)
+    const prev = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = prev
+    }
+  }, [expanded])
 
   const displayNodes: Node[] = useMemo(() => {
     return nodes.map((node) => {
@@ -179,7 +194,15 @@ function LiveSimpleLoopGraphInner({
         : selectedMeta
 
   return (
-    <section className="relative flex h-[520px] flex-col border border-line bg-panel/40">
+    <>
+    {expanded ? <div className="h-[520px]" aria-hidden /> : null}
+    <section
+      className={
+        expanded
+          ? 'fixed inset-0 z-50 flex flex-col border border-line bg-panel'
+          : 'relative flex h-[520px] flex-col border border-line bg-panel/40'
+      }
+    >
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line px-3 py-2">
         <div>
           <h2 className="font-display text-xl text-paper">Live agent graph</h2>
@@ -188,13 +211,22 @@ function LiveSimpleLoopGraphInner({
             {activeNodeId ? ` · active: ${activeNodeId}` : ''}
           </p>
         </div>
-        <button
-          type="button"
-          onClick={resetLayout}
-          className="border border-line px-2 py-1 font-mono text-[11px] text-mist hover:border-teal hover:text-teal"
-        >
-          Reset layout
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="border border-line px-2 py-1 font-mono text-[11px] text-mist hover:border-teal hover:text-teal"
+          >
+            {expanded ? 'Collapse' : 'Expand'}
+          </button>
+          <button
+            type="button"
+            onClick={resetLayout}
+            className="border border-line px-2 py-1 font-mono text-[11px] text-mist hover:border-teal hover:text-teal"
+          >
+            Reset layout
+          </button>
+        </div>
       </div>
       <div className="relative min-h-0 flex-1">
         <ReactFlow
@@ -242,6 +274,7 @@ function LiveSimpleLoopGraphInner({
         )}
       </div>
     </section>
+    </>
   )
 }
 

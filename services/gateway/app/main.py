@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import json
 import os
 import sys
@@ -650,6 +651,26 @@ MINI_LOOP_ROOT = Path(os.getenv("MINI_LOOP_ROOT", str(ROOT / "mini_loop")))
 if not MINI_LOOP_ROOT.exists():
     MINI_LOOP_ROOT = Path("/mini_loop")
 
+STUDENT_LOOP_ROOT = Path(os.getenv("STUDENT_LOOP_ROOT", str(ROOT / "student_loop")))
+if not STUDENT_LOOP_ROOT.exists():
+    STUDENT_LOOP_ROOT = Path("/student_loop")
+
+
+DEFAULT_OPENROUTER_MODEL = os.getenv(
+    "OPENROUTER_MODEL",
+    "nvidia/nemotron-3.5-lightning:free",
+)
+
+# Classroom fallback when OpenRouter /models is unreachable.
+_FALLBACK_OPENROUTER_MODELS = [
+    {"id": "nvidia/nemotron-3.5-lightning:free", "name": "Nemotron 3.5 Lightning (free)", "free": True},
+    {"id": "xingchen-agi/xing4.0-29b-a4b:free", "name": "Xing4.0 29B (free)", "free": True},
+    {"id": "meta-llama/llama-3.3-70b-instruct:free", "name": "Llama 3.3 70B (free)", "free": True},
+    {"id": "google/gemma-3-27b-it:free", "name": "Gemma 3 27B (free)", "free": True},
+    {"id": "qwen/qwen3-14b:free", "name": "Qwen3 14B (free)", "free": True},
+    {"id": "mistralai/mistral-small-3.1-24b-instruct:free", "name": "Mistral Small 3.1 (free)", "free": True},
+]
+
 
 class SimpleLoopRequest(BaseModel):
     dataset_path: str | None = None
@@ -657,6 +678,59 @@ class SimpleLoopRequest(BaseModel):
     target_score: float = 0.8
     max_cycles: int = 3
     seed: int = 42
+    model: str | None = None
+
+
+def _default_openrouter_model() -> str:
+    return (os.getenv("OPENROUTER_MODEL") or DEFAULT_OPENROUTER_MODEL).strip()
+
+
+def _fetch_openrouter_models() -> list[dict]:
+    """Return OpenRouter chat models (free first). Falls back offline."""
+    import urllib.error
+    import urllib.request
+
+    key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    headers = {
+        "Accept": "application/json",
+        "HTTP-Referer": "https://localhost/automl-research-lab",
+        "X-Title": "Simple Research Loop",
+    }
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    req = urllib.request.Request(
+        "https://openrouter.ai/api/v1/models",
+        headers=headers,
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError, OSError):
+        return list(_FALLBACK_OPENROUTER_MODELS)
+
+    rows: list[dict] = []
+    for item in data.get("data") or []:
+        mid = str(item.get("id") or "").strip()
+        if not mid:
+            continue
+        pricing = item.get("pricing") or {}
+        try:
+            free = mid.endswith(":free") or (
+                float(pricing.get("prompt") or 0) == 0.0
+                and float(pricing.get("completion") or 0) == 0.0
+            )
+        except (TypeError, ValueError):
+            free = mid.endswith(":free")
+        name = str(item.get("name") or mid)
+        rows.append({"id": mid, "name": name, "free": bool(free)})
+
+    if not rows:
+        return list(_FALLBACK_OPENROUTER_MODELS)
+
+    # Free models first, then the rest — keeps the classroom dropdown usable.
+    rows.sort(key=lambda r: (not r["free"], r["id"].lower()))
+    return rows
 
 
 def _simple_loop_dataset_dirs() -> list[Path]:
@@ -737,7 +811,7 @@ def simple_loop_info() -> dict:
         "router": "conditional edge accept|revise|reject",
         "llm": {
             "provider": "openrouter",
-            "model": os.getenv("OPENROUTER_MODEL", "xingchen-agi/xing4.0-29b-a4b:free"),
+            "model": _default_openrouter_model(),
             "key_configured": bool(os.getenv("OPENROUTER_API_KEY")),
         },
         "datasets": [
@@ -745,6 +819,46 @@ def simple_loop_info() -> dict:
             for d in _simple_loop_dataset_dirs()
             for p in sorted(d.glob("*.csv"))
         ],
+    }
+
+
+@app.get("/simple-loop/models")
+def simple_loop_models() -> dict:
+    """Models for the simple-loop agent dropdown (Cursor SDK + OpenRouter)."""
+    default = _default_openrouter_model()
+    cursor_ok = bool(os.getenv("CURSOR_API_KEY", "").strip())
+    openrouter_ok = bool(os.getenv("OPENROUTER_API_KEY", "").strip())
+    cursor_models = [
+        {
+            "id": "cursor/composer-2.5",
+            "name": "Cursor Composer 2.5 (SDK)",
+            "free": False,
+            "provider": "cursor",
+            "available": cursor_ok,
+        }
+    ]
+    openrouter = [
+        {**m, "provider": "openrouter", "available": openrouter_ok}
+        for m in _fetch_openrouter_models()
+    ]
+    models = [*cursor_models, *openrouter]
+    ids = {m["id"] for m in models}
+    if default not in ids:
+        models.insert(
+            1 if default.startswith("cursor/") else len(cursor_models),
+            {
+                "id": default,
+                "name": default,
+                "free": default.endswith(":free"),
+                "provider": "cursor" if default.startswith("cursor/") else "openrouter",
+                "available": cursor_ok if default.startswith("cursor/") else openrouter_ok,
+            },
+        )
+    return {
+        "default": default,
+        "cursor_configured": cursor_ok,
+        "key_configured": openrouter_ok,
+        "models": models,
     }
 
 
@@ -829,6 +943,7 @@ def _record_simple_loop_run(
     max_cycles: int,
     result: dict | None = None,
     error: str | None = None,
+    model: str | None = None,
 ) -> dict:
     holdout = (result or {}).get("holdout_metrics") or {}
     verdict = (result or {}).get("verdict") or {}
@@ -843,7 +958,7 @@ def _record_simple_loop_run(
             "best_val_f1": (result or {}).get("best_val_f1"),
             "holdout_f1": holdout.get("f1") if isinstance(holdout, dict) else None,
             "stop_reason": (result or {}).get("stop_reason"),
-            "model": os.getenv("OPENROUTER_MODEL", "xingchen-agi/xing4.0-29b-a4b:free"),
+            "model": (model or "").strip() or _default_openrouter_model(),
             "verdict_action": verdict.get("action") if isinstance(verdict, dict) else None,
             "error": error,
         }
@@ -868,6 +983,7 @@ async def simple_loop_run(body: SimpleLoopRequest) -> JSONResponse:
     """Run the teaching LangGraph (each node = isolated Python script)."""
     dataset = _resolve_simple_loop_dataset(body.dataset_path)
     label = _simple_loop_dataset_label(dataset, body.dataset_path)
+    model = (body.model or "").strip() or _default_openrouter_model()
     mini_graph = _import_simple_loop()
     try:
         result = mini_graph.run_simple_loop(
@@ -876,6 +992,7 @@ async def simple_loop_run(body: SimpleLoopRequest) -> JSONResponse:
             target_score=body.target_score,
             max_cycles=body.max_cycles,
             seed=body.seed,
+            model=model,
         )
     except Exception as exc:  # noqa: BLE001
         _record_simple_loop_run(
@@ -884,6 +1001,7 @@ async def simple_loop_run(body: SimpleLoopRequest) -> JSONResponse:
             target_score=body.target_score,
             max_cycles=body.max_cycles,
             error=str(exc),
+            model=model,
         )
         raise HTTPException(status_code=500, detail=f"simple-loop failed: {exc}") from exc
     _record_simple_loop_run(
@@ -892,6 +1010,7 @@ async def simple_loop_run(body: SimpleLoopRequest) -> JSONResponse:
         target_score=body.target_score,
         max_cycles=body.max_cycles,
         result=result if isinstance(result, dict) else {},
+        model=model,
     )
     return JSONResponse(result)
 
@@ -903,10 +1022,12 @@ async def simple_loop_stream(
     target_score: float = Query(default=0.8),
     max_cycles: int = Query(default=3, ge=1, le=8),
     seed: int = Query(default=42),
+    model: str | None = Query(default=None),
 ) -> StreamingResponse:
     """SSE stream of LangGraph node events for the live simple-loop UI."""
     dataset = _resolve_simple_loop_dataset(dataset_path)
     label = _simple_loop_dataset_label(dataset, dataset_path)
+    chosen_model = (model or "").strip() or _default_openrouter_model()
     mini_graph = _import_simple_loop()
 
     def event_stream():
@@ -918,6 +1039,7 @@ async def simple_loop_stream(
                 target_score=target_score,
                 max_cycles=max_cycles,
                 seed=seed,
+                model=chosen_model,
             ):
                 etype = str(ev.get("type") or "message")
                 if etype == "run_completed" and not saved:
@@ -928,6 +1050,7 @@ async def simple_loop_stream(
                         target_score=target_score,
                         max_cycles=max_cycles,
                         result=result if isinstance(result, dict) else {},
+                        model=chosen_model,
                     )
                     saved = True
                 if etype == "error" and not saved:
@@ -937,6 +1060,7 @@ async def simple_loop_stream(
                         target_score=target_score,
                         max_cycles=max_cycles,
                         error=str(ev.get("message") or "stream error"),
+                        model=chosen_model,
                     )
                     saved = True
                 yield f"event: {etype}\n"
@@ -949,7 +1073,95 @@ async def simple_loop_stream(
                     target_score=target_score,
                     max_cycles=max_cycles,
                     error=str(exc),
+                    model=chosen_model,
                 )
+            err = {"type": "error", "message": str(exc)}
+            yield "event: error\n"
+            yield f"data: {json.dumps(err)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# --- Student research loop (classroom skeleton; empty until wired) ---
+
+
+def _import_student_loop():
+    if not (STUDENT_LOOP_ROOT / "graph.py").exists():
+        raise HTTPException(status_code=503, detail=f"student_loop missing at {STUDENT_LOOP_ROOT}")
+    pkg_root = STUDENT_LOOP_ROOT.parent
+    if str(pkg_root) not in sys.path:
+        sys.path.insert(0, str(pkg_root))
+    # Drop cached modules so host edits show up without restarting gateway.
+    for name in list(sys.modules):
+        if name == "student_loop" or name.startswith("student_loop."):
+            del sys.modules[name]
+    try:
+        return importlib.import_module("student_loop.graph")
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503, detail=f"cannot import student_loop.graph: {exc}"
+        ) from exc
+
+
+@app.get("/student-loop/status")
+def student_loop_status() -> dict:
+    """Readiness for the Build Loop UI (empty canvas until ready)."""
+    base = {
+        "root": str(STUDENT_LOOP_ROOT),
+        "available": (STUDENT_LOOP_ROOT / "graph.py").exists(),
+    }
+    if not base["available"]:
+        return {
+            **base,
+            "ready": False,
+            "nodes": [],
+            "missing_nodes": [],
+            "error": "student_loop/graph.py not found",
+        }
+    student_graph = _import_student_loop()
+    status = student_graph.get_status()
+    return {**base, **status}
+
+
+@app.get("/student-loop/stream")
+async def student_loop_stream(
+    target_column: str = Query(..., min_length=1),
+    dataset_path: str = Query(..., min_length=1),
+    target_score: float = Query(default=0.8),
+    max_cycles: int = Query(default=3, ge=1, le=8),
+    seed: int = Query(default=42),
+) -> StreamingResponse:
+    """SSE stream for the student skeleton graph (no run history)."""
+    dataset = _resolve_simple_loop_dataset(dataset_path)
+    student_graph = _import_student_loop()
+    status = student_graph.get_status()
+    if not status.get("ready"):
+        raise HTTPException(
+            status_code=400,
+            detail=status.get("error") or "student graph not ready — wire build_graph() first",
+        )
+
+    def event_stream():
+        try:
+            for ev in student_graph.stream_simple_loop(
+                dataset_path=dataset,
+                target_column=target_column,
+                target_score=target_score,
+                max_cycles=max_cycles,
+                seed=seed,
+            ):
+                etype = str(ev.get("type") or "message")
+                yield f"event: {etype}\n"
+                yield f"data: {json.dumps(ev, default=str)}\n\n"
+        except Exception as exc:  # noqa: BLE001
             err = {"type": "error", "message": str(exc)}
             yield "event: error\n"
             yield f"data: {json.dumps(err)}\n\n"

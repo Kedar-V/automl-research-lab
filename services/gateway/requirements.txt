@@ -8,3 +8,4 @@ redis>=5.0
 pandas>=2.2
 scikit-learn>=1.4
 langgraph>=0.2
+cursor-sdk>=0.1.0

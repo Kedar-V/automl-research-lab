@@ -190,9 +190,25 @@ Use the UI path for the classroom demo.
 
 | Order | What | Outcome |
 | --- | --- | --- |
-| 1 | Section 1 (Airflow) | Baseline + `merged_latest.csv` |
-| 2 | Section 2 (simple loop) | Students run `/simple-loop` on that CSV |
-| 3 | (Later) DAG `simple_loop_baseline_and_trigger` | Reveal how Airflow could call the loop |
+| 1 | Airflow **student** DAG `student_baseline_prep` | Fill tasks in [`airflow/dags/student_baseline_prep.py`](airflow/dags/student_baseline_prep.py), wire deps → Graph fills → run |
+| 2 | (Optional reveal) Section 1 instructor DAG | Baseline + `merged_latest.csv` via `simple_loop_baseline_prep` |
+| 3 | LangGraph **Build Loop** | Fill [`student_loop/graph.py`](student_loop/graph.py) → `/student-loop` empty until ready → Run |
+| 4 | (Optional reveal) Section 2 `/simple-loop` | Instructor mini-loop on the same CSV |
+| 5 | (Later) DAG `simple_loop_baseline_and_trigger` | Reveal how Airflow could call the loop |
+
+### Build Loop (student LangGraph)
+
+With the stack from Section 2 running:
+
+1. Follow [`student_loop/COPY_GUIDE.md`](student_loop/COPY_GUIDE.md) — paste into [`student_loop/graph.py`](student_loop/graph.py) one step at a time (from the simple-loop heuristics)
+2. Open [http://127.0.0.1:5173/student-loop](http://127.0.0.1:5173/student-loop) — canvas stays empty until the graph is ready
+3. Click **Refresh graph**, then **Run loop**
+
+CLI check: `python -m student_loop.run_cli --status` · details: [`student_loop/README.md`](student_loop/README.md)
+
+### Airflow student DAG
+
+After Airflow is up (Section 1.1), open the UI and find `student_baseline_prep`. The Graph tab is empty until students uncomment the wiring block in [`airflow/dags/student_baseline_prep.py`](airflow/dags/student_baseline_prep.py).
 
 ---
 
