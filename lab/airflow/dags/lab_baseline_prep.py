@@ -121,11 +121,11 @@ def lab_baseline_prep():
     # TODO: paste wiring from /guide → Airflow (identical to solution_baseline_prep.py):
     left = validate_customers()
     right = validate_transactions()
-    # merged = merge_csvs(left, right)  # waits for BOTH validates
+    merged = merge_csvs(left, right)  # waits for BOTH validates
     # demo = make_subset(merged)
     # prof = profile_light(demo)
     # base = train_baseline(demo, prof)  # needs subset path + drop list
-    publish_merged(demo, base)
+    # publish_merged(demo, base)
 
 
 # Actually register the DAG with Airflow (decorators alone are not enough).
