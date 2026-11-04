@@ -1,23 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import {
-  getStudentLoopStatus,
-  listSimpleLoopDatasets,
-  listSimpleLoopModels,
-  listSimpleLoopRuns,
-  uploadSimpleLoopDataset,
-  type SimpleLoopDataset,
-  type SimpleLoopModel,
-  type SimpleLoopRunRecord,
-  type StudentLoopStatus,
+  listSolutionLoopDatasets,
+  listSolutionLoopModels,
+  listSolutionLoopRuns,
+  uploadSolutionLoopDataset,
+  type LoopDataset,
+  type LoopModel,
+  type LoopRunRecord,
 } from '../api/gateway'
 import { BestVsPrevious } from '../components/BestVsPrevious'
 import { BudgetPanel } from '../components/BudgetPanel'
 import { ExperimentTimeline } from '../components/ExperimentTimeline'
 import {
   LiveSimpleLoopGraph,
-  visualEdgeKeysFromLangGraph,
-  visualIdsFromLangGraphNodes,
   type SimpleLoopRuntime,
   type SimpleNodeStatus,
 } from '../components/LiveSimpleLoopGraph'
@@ -25,7 +21,7 @@ import { ScoreChart } from '../components/ScoreChart'
 import { SelfHealPanel } from '../components/SelfHealPanel'
 import { SessionMeta } from '../components/SessionMeta'
 import { SimpleLoopRunHistory } from '../components/SimpleLoopRunHistory'
-import { GRAPH_NODE_TO_VISUAL, SIMPLE_LOOP_NODES } from '../graph/simpleLoopConfig'
+import { GRAPH_NODE_TO_VISUAL } from '../graph/simpleLoopConfig'
 import { guessTargetColumn, sniffCsvHeaders } from '../lib/csvHeaders'
 import {
   agentOutputFromStep,
@@ -33,6 +29,7 @@ import {
   upsertExperiment,
   withAgentOutput,
 } from '../lib/simpleLoopAgents'
+import { SIMPLE_LOOP_NODES } from '../graph/simpleLoopConfig'
 import { initialSessionState } from '../state/sessionReducer'
 import type { AgentCycleOutput, EventEnvelope, ExperimentEntry, SessionState } from '../types/events'
 
@@ -103,9 +100,9 @@ function setStatus(
 function makeHealEvent(expId: string, note?: string): EventEnvelope {
   return {
     timestamp: new Date().toISOString(),
-    session_id: 'student-loop',
+    session_id: 'solution-loop',
     correlation_id: `heal-${expId}`,
-    source_service: 'student-loop',
+    source_service: 'solution-loop',
     source_agent: 'error_repair',
     type: 'activity',
     payload: {
@@ -121,15 +118,13 @@ function makeHealEvent(expId: string, note?: string): EventEnvelope {
   }
 }
 
-export function StudentLoopPage() {
-  const [graphStatus, setGraphStatus] = useState<StudentLoopStatus | null>(null)
-  const [statusLoading, setStatusLoading] = useState(false)
+export function SolutionLoopPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<RunResult | null>(null)
   const [targetScore, setTargetScore] = useState(0.8)
   const [maxCycles, setMaxCycles] = useState(3)
-  const [catalog, setCatalog] = useState<SimpleLoopDataset[]>([])
+  const [catalog, setCatalog] = useState<LoopDataset[]>([])
   const [datasetFilename, setDatasetFilename] = useState('')
   const [datasetPath, setDatasetPath] = useState<string | null>(null)
   const [columns, setColumns] = useState<string[]>([])
@@ -143,39 +138,20 @@ export function StudentLoopPage() {
   const [liveCycle, setLiveCycle] = useState(0)
   const [stopReason, setStopReason] = useState<string | null>(null)
   const [holdoutScore, setHoldoutScore] = useState<number | null>(null)
-  const [runHistory, setRunHistory] = useState<SimpleLoopRunRecord[]>([])
+  const [runHistory, setRunHistory] = useState<LoopRunRecord[]>([])
   const [historyLoading, setHistoryLoading] = useState(false)
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
-  const [models, setModels] = useState<SimpleLoopModel[]>([])
+  const [models, setModels] = useState<LoopModel[]>([])
   const [modelId, setModelId] = useState('')
   const sourceRef = useRef<EventSource | null>(null)
   const runningRef = useRef(false)
   const cycleRef = useRef(0)
   const dsOutputRef = useRef<AgentCycleOutput | null>(null)
 
-  const refreshGraphStatus = useCallback(async () => {
-    setStatusLoading(true)
-    try {
-      setGraphStatus(await getStudentLoopStatus())
-    } catch (e) {
-      setGraphStatus({
-        root: '',
-        available: false,
-        ready: false,
-        nodes: [],
-        edges: [],
-        missing_nodes: [],
-        error: e instanceof Error ? e.message : 'status failed',
-      })
-    } finally {
-      setStatusLoading(false)
-    }
-  }, [])
-
   const refreshHistory = useCallback(async () => {
     setHistoryLoading(true)
     try {
-      setRunHistory(await listSimpleLoopRuns())
+      setRunHistory(await listSolutionLoopRuns())
     } catch {
       // Non-fatal — panel stays empty / stale
     } finally {
@@ -183,7 +159,7 @@ export function StudentLoopPage() {
     }
   }, [])
 
-  const applyDataset = useCallback((ds: SimpleLoopDataset) => {
+  const applyDataset = useCallback((ds: LoopDataset) => {
     setDatasetFilename(ds.filename)
     setDatasetPath(ds.path ?? ds.filename)
     setColumns(ds.columns ?? [])
@@ -195,14 +171,10 @@ export function StudentLoopPage() {
   }, [])
 
   useEffect(() => {
-    void refreshGraphStatus()
-  }, [refreshGraphStatus])
-
-  useEffect(() => {
     let cancelled = false
     ;(async () => {
       try {
-        const rows = await listSimpleLoopDatasets()
+        const rows = await listSolutionLoopDatasets()
         if (cancelled) return
         setCatalog(rows)
         if (rows.length > 0) {
@@ -216,7 +188,7 @@ export function StudentLoopPage() {
     })()
     ;(async () => {
       try {
-        const catalog = await listSimpleLoopModels()
+        const catalog = await listSolutionLoopModels()
         if (cancelled) return
         const rows = catalog.models ?? []
         setModels(rows)
@@ -224,6 +196,7 @@ export function StudentLoopPage() {
           const fallback = catalog.default || rows[0]?.id || ''
           if (!prev) return fallback
           const match = rows.find((m) => m.id === prev)
+          // Drop stale/unavailable picks (e.g. rate-limited free model left selected).
           if (!match || match.available === false) return fallback
           return prev
         })
@@ -253,90 +226,96 @@ export function StudentLoopPage() {
     dsOutputRef.current = null
   }, [])
 
-  const openHistoryRun = useCallback((run: SimpleLoopRunRecord) => {
-    sourceRef.current?.close()
-    sourceRef.current = null
-    runningRef.current = false
-    setBusy(false)
-    setSelectedRunId(run.run_id)
-    setError(run.error || null)
+  const openHistoryRun = useCallback(
+    (run: LoopRunRecord) => {
+      sourceRef.current?.close()
+      sourceRef.current = null
+      runningRef.current = false
+      setBusy(false)
+      setSelectedRunId(run.run_id)
+      setError(run.error || null)
 
-    if (run.dataset) setDatasetFilename(run.dataset)
-    if (run.target_column) setTargetColumn(run.target_column)
-    if (typeof run.target_score === 'number') setTargetScore(run.target_score)
-    if (typeof run.max_cycles === 'number') setMaxCycles(run.max_cycles)
-    if (run.model) setModelId(run.model)
+      if (run.dataset) setDatasetFilename(run.dataset)
+      if (run.target_column) setTargetColumn(run.target_column)
+      if (typeof run.target_score === 'number') setTargetScore(run.target_score)
+      if (typeof run.max_cycles === 'number') setMaxCycles(run.max_cycles)
+      if (run.model) setModelId(run.model)
 
-    const payload = run.result
-    const rebuilt = experimentsFromRunSteps(payload?.steps)
-    setExperiments(rebuilt)
-    setTraceEvents([])
-    setLiveBest(
-      typeof payload?.best_val_f1 === 'number'
-        ? payload.best_val_f1
-        : typeof run.best_val_f1 === 'number'
-          ? run.best_val_f1
-          : null,
-    )
-    setLiveCycle(
-      typeof payload?.cycles === 'number'
-        ? payload.cycles
-        : typeof run.cycles === 'number'
-          ? run.cycles
-          : 0,
-    )
-    setHoldoutScore(
-      typeof payload?.holdout_metrics?.f1 === 'number'
-        ? payload.holdout_metrics.f1
-        : typeof run.holdout_f1 === 'number'
-          ? run.holdout_f1
-          : null,
-    )
-    setStopReason(payload?.stop_reason ?? run.stop_reason)
-    setResult(
-      payload
-        ? {
-            cycles: payload.cycles,
-            best_val_f1: payload.best_val_f1,
-            holdout_metrics: payload.holdout_metrics,
-            verdict: payload.verdict,
-            stop_reason: payload.stop_reason,
-            best_spec: payload.best_spec,
-            steps: payload.steps as Step[] | undefined,
+      const payload = run.result
+      const rebuilt = experimentsFromRunSteps(payload?.steps)
+      setExperiments(rebuilt)
+      setTraceEvents([])
+      setLiveBest(
+        typeof payload?.best_val_f1 === 'number'
+          ? payload.best_val_f1
+          : typeof run.best_val_f1 === 'number'
+            ? run.best_val_f1
+            : null,
+      )
+      setLiveCycle(
+        typeof payload?.cycles === 'number'
+          ? payload.cycles
+          : typeof run.cycles === 'number'
+            ? run.cycles
+            : 0,
+      )
+      setHoldoutScore(
+        typeof payload?.holdout_metrics?.f1 === 'number'
+          ? payload.holdout_metrics.f1
+          : typeof run.holdout_f1 === 'number'
+            ? run.holdout_f1
+            : null,
+      )
+      setStopReason(payload?.stop_reason ?? run.stop_reason)
+      setResult(
+        payload
+          ? {
+              cycles: payload.cycles,
+              best_val_f1: payload.best_val_f1,
+              holdout_metrics: payload.holdout_metrics,
+              verdict: payload.verdict,
+              stop_reason: payload.stop_reason,
+              best_spec: payload.best_spec,
+              steps: payload.steps as Step[] | undefined,
+            }
+          : {
+              cycles: run.cycles ?? undefined,
+              best_val_f1: run.best_val_f1 ?? undefined,
+              holdout_metrics:
+                run.holdout_f1 != null ? { f1: run.holdout_f1 } : undefined,
+              stop_reason: run.stop_reason ?? undefined,
+              verdict: run.verdict_action
+                ? { action: run.verdict_action }
+                : undefined,
+            },
+      )
+
+      const nextRuntime: SimpleLoopRuntime = {}
+      for (const n of SIMPLE_LOOP_NODES) {
+        nextRuntime[n.id] = { status: 'completed' }
+      }
+      if (run.dataset) nextRuntime.dataset = { status: 'completed', note: run.dataset }
+      for (const step of payload?.steps ?? []) {
+        const node = String(step.node || '')
+        const visual = GRAPH_NODE_TO_VISUAL[node] ?? node
+        if (visual) {
+          nextRuntime[visual] = {
+            status: step.status === 'failed' || step.status === 'error' ? 'failed' : 'completed',
+            note: typeof step.note === 'string' ? step.note : undefined,
           }
-        : {
-            cycles: run.cycles ?? undefined,
-            best_val_f1: run.best_val_f1 ?? undefined,
-            holdout_metrics: run.holdout_f1 != null ? { f1: run.holdout_f1 } : undefined,
-            stop_reason: run.stop_reason ?? undefined,
-            verdict: run.verdict_action ? { action: run.verdict_action } : undefined,
-          },
-    )
-
-    const nextRuntime: SimpleLoopRuntime = {}
-    for (const n of SIMPLE_LOOP_NODES) {
-      nextRuntime[n.id] = { status: 'completed' }
-    }
-    if (run.dataset) nextRuntime.dataset = { status: 'completed', note: run.dataset }
-    for (const step of payload?.steps ?? []) {
-      const node = String(step.node || '')
-      const visual = GRAPH_NODE_TO_VISUAL[node] ?? node
-      if (visual) {
-        nextRuntime[visual] = {
-          status: step.status === 'failed' || step.status === 'error' ? 'failed' : 'completed',
-          note: typeof step.note === 'string' ? step.note : undefined,
         }
       }
-    }
-    setRuntime(nextRuntime)
-    setActiveNodeId(null)
-    cycleRef.current =
-      typeof payload?.cycles === 'number'
-        ? payload.cycles
-        : typeof run.cycles === 'number'
-          ? run.cycles
-          : 0
-  }, [])
+      setRuntime(nextRuntime)
+      setActiveNodeId(null)
+      cycleRef.current =
+        typeof payload?.cycles === 'number'
+          ? payload.cycles
+          : typeof run.cycles === 'number'
+            ? run.cycles
+            : 0
+    },
+    [],
+  )
 
   const onPickCatalog = useCallback(
     (filename: string) => {
@@ -356,9 +335,10 @@ export function StudentLoopPage() {
       setUploading(true)
       setError(null)
       try {
+        // Prefer server staging (path the gateway can read); also sniff locally for snappy UX.
         const localCols = sniffCsvHeaders(await file.text())
-        const uploaded = await uploadSimpleLoopDataset(file)
-        const ds: SimpleLoopDataset = {
+        const uploaded = await uploadSolutionLoopDataset(file)
+        const ds: LoopDataset = {
           ...uploaded,
           columns: uploaded.columns?.length ? uploaded.columns : localCols,
         }
@@ -377,10 +357,6 @@ export function StudentLoopPage() {
   )
 
   const onRun = useCallback(() => {
-    if (!graphStatus?.ready) {
-      setError('Graph not ready — wire student_loop/graph.py and Refresh graph')
-      return
-    }
     if (!datasetFilename && !datasetPath) {
       setError('Choose or upload a CSV first')
       return
@@ -410,7 +386,7 @@ export function StudentLoopPage() {
       return
     }
     params.set('model', chosenModel)
-    const source = new EventSource(`/api/student-loop/stream?${params.toString()}`)
+    const source = new EventSource(`/api/solution-loop/stream?${params.toString()}`)
     sourceRef.current = source
 
     const finish = () => {
@@ -503,8 +479,8 @@ export function StudentLoopPage() {
           cycleRef.current = ev.cycle
         }
 
-        const stepRec = (ev.step ?? {}) as Record<string, unknown>
-        const agentPayload = agentOutputFromStep(stepRec)
+        const step = (ev.step ?? {}) as Record<string, unknown>
+        const agentPayload = agentOutputFromStep(step)
 
         if (ev.node === 'data_scientist') {
           dsOutputRef.current = agentPayload
@@ -566,9 +542,7 @@ export function StudentLoopPage() {
               next = withAgentOutput(next, 'data_scientist', dsOutputRef.current)
             }
             const without =
-              runningIdx >= 0
-                ? prev.filter((_, i) => i !== runningIdx)
-                : prev.filter((e) => e.experimentId !== expId)
+              runningIdx >= 0 ? prev.filter((_, i) => i !== runningIdx) : prev.filter((e) => e.experimentId !== expId)
             return upsertExperiment(without, next)
           })
           if (mlStep.repaired) {
@@ -617,7 +591,7 @@ export function StudentLoopPage() {
       }
 
       if (ev.type === 'error') {
-        setError(ev.message || 'student-loop stream error')
+        setError(ev.message || 'solution-loop stream error')
         finish()
         void refreshHistory()
       }
@@ -645,7 +619,6 @@ export function StudentLoopPage() {
   }, [
     datasetFilename,
     datasetPath,
-    graphStatus?.ready,
     maxCycles,
     modelId,
     refreshHistory,
@@ -654,21 +627,12 @@ export function StudentLoopPage() {
     targetScore,
   ])
 
-  const ready = Boolean(graphStatus?.ready)
-  const canRun = ready && Boolean(datasetFilename && targetColumn.trim()) && !busy && !uploading
-  const visibleNodeIds = useMemo(
-    () => Array.from(visualIdsFromLangGraphNodes(graphStatus?.nodes ?? [])),
-    [graphStatus?.nodes],
-  )
-  const visibleEdgeKeys = useMemo(
-    () => visualEdgeKeysFromLangGraph(graphStatus?.edges ?? []),
-    [graphStatus?.edges],
-  )
+  const canRun = Boolean(datasetFilename && targetColumn.trim()) && !busy && !uploading
 
   const panelState: SessionState = useMemo(
     () =>
       initialSessionState({
-        sessionId: 'student-loop',
+        sessionId: 'solution-loop',
         status: busy ? 'running' : result ? 'completed' : error ? 'error' : 'idle',
         mode: 'live',
         dataset: datasetFilename || '—',
@@ -708,7 +672,7 @@ export function StudentLoopPage() {
       <header className="flex flex-wrap items-end justify-between gap-4 border-b border-line px-6 py-4">
         <div className="flex min-w-0 items-start gap-3">
           <Link
-            to="/"
+            to="/guide"
             className="mt-1 inline-flex shrink-0 items-center gap-1.5 rounded border border-line bg-panel px-3 py-2 text-sm text-paper hover:border-teal hover:text-teal"
           >
             <span aria-hidden className="font-mono text-base leading-none">
@@ -718,25 +682,19 @@ export function StudentLoopPage() {
           </Link>
           <div className="min-w-0">
             <p className="font-mono text-[10px] uppercase tracking-[0.2em] text-teal">
-              Student lab
+              Teaching path
             </p>
-            <h1 className="font-display text-3xl font-semibold text-paper">Build Loop</h1>
+            <h1 className="font-display text-3xl font-semibold text-paper">
+              Solution Loop
+            </h1>
             <p className="mt-1 text-sm text-mist">
-              Wire <code className="text-paper">student_loop/graph.py</code> · same UI as Simple Loop
+              Filled LangGraph reference · any CSV · live SSE
               {liveCycle > 0 ? ` · cycle ${liveCycle}` : ''}
             </p>
           </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => void refreshGraphStatus()}
-            disabled={statusLoading || busy}
-            className="rounded border border-line bg-panel px-3 py-2 text-sm text-paper hover:border-teal disabled:opacity-50"
-          >
-            {statusLoading ? 'Checking…' : 'Refresh graph'}
-          </button>
           <label className="flex items-center gap-2 text-sm text-mist">
             Model
             <select
@@ -744,7 +702,7 @@ export function StudentLoopPage() {
               onChange={(e) => setModelId(e.target.value)}
               disabled={busy || models.length === 0}
               className="max-w-[18rem] border border-line bg-ink-2 px-2 py-1.5 font-mono text-xs text-paper"
-              title="LLM used by student-loop agents"
+              title="LLM used by solution-loop agents"
             >
               {models.length === 0 && <option value="">Loading models…</option>}
               {models.some((m) => m.provider === 'cursor') && (
@@ -812,16 +770,14 @@ export function StudentLoopPage() {
           </label>
           <span
             className={`rounded border px-2 py-1 font-mono text-[11px] uppercase tracking-wide ${
-              !ready
-                ? 'border-line text-mist'
-                : busy
-                  ? 'border-teal/50 bg-teal/15 text-teal'
-                  : result
-                    ? 'border-line bg-panel text-paper'
-                    : 'border-line text-mist'
+              busy
+                ? 'border-teal/50 bg-teal/15 text-teal'
+                : result
+                  ? 'border-line bg-panel text-paper'
+                  : 'border-line text-mist'
             }`}
           >
-            {!ready ? 'not ready' : busy ? 'running' : result ? 'completed' : error ? 'error' : 'idle'}
+            {busy ? 'running' : result ? 'completed' : error ? 'error' : 'idle'}
           </span>
           <button
             type="button"
@@ -908,28 +864,11 @@ export function StudentLoopPage() {
 
       <div className="mx-auto grid w-full max-w-[1400px] flex-1 gap-6 px-4 py-6 lg:grid-cols-[1.1fr_0.9fr]">
         <div className="flex min-h-0 flex-col gap-6">
-          {!ready && (
-            <p className="border border-line bg-panel/80 px-3 py-2 font-mono text-xs text-mist">
-              Building: {(graphStatus?.nodes ?? []).join(', ') || '(no add_node yet)'}
-              {graphStatus?.missing_nodes?.length
-                ? ` · still need: ${graphStatus.missing_nodes.join(', ')}`
-                : ''}
-              {' · '}
-              Run stays disabled until the full graph compiles.
-            </p>
-          )}
-          {graphStatus?.error && (
-            <p className="border border-danger/40 bg-danger/10 px-3 py-2 font-mono text-xs text-danger">
-              {graphStatus.error}
-            </p>
-          )}
           <LiveSimpleLoopGraph
             runtime={runtime}
             activeNodeId={activeNodeId}
             datasetLabel={datasetFilename || null}
             targetColumn={targetColumn || null}
-            visibleNodeIds={visibleNodeIds}
-            visibleEdgeKeys={visibleEdgeKeys}
           />
           <ExperimentTimeline experiments={experiments} traceEvents={traceEvents} />
         </div>
@@ -953,12 +892,12 @@ export function StudentLoopPage() {
       </div>
 
       <footer className="border-t border-line px-6 py-3 text-center text-xs text-mist">
-        <Link to="/" className="text-teal hover:underline">
-          Projects
+        <Link to="/guide" className="text-teal hover:underline">
+          Guide
         </Link>
         {' · '}
-        <Link to="/simple-loop" className="text-teal hover:underline">
-          Simple loop
+        <Link to="/lab-loop" className="text-teal hover:underline">
+          Lab loop
         </Link>
         {' · '}
         Live agent graph driven by SSE

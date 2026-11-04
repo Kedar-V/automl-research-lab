@@ -1,7 +1,7 @@
 """STUDENT LAB — fill node bodies + wire build_graph().
 
 LLM / train helpers are imported from loop_runtime.py (instructor-maintained).
-Copy node bodies and wiring from mini_loop/graph.py or the Guide (/guide → LangGraph).
+Copy node bodies and wiring from solution/langgraph/graph.py or the Guide (/guide → LangGraph).
 
 Flow:
   START → data_scientist → hypothesis → ml_engineer → judge
@@ -23,7 +23,7 @@ import pandas as pd
 from langgraph.graph import END, START, StateGraph
 
 ROOT = Path(__file__).resolve().parent
-REPO = ROOT.parent
+REPO = ROOT.parents[1]
 for _p in (REPO, Path("/app")):
     if _p.exists() and str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
@@ -138,7 +138,7 @@ def build_graph():
     g = StateGraph(SimpleLoopState)
 
     # TODO: paste add_node / add_edge / add_conditional_edges / return g.compile()
-    # from mini_loop/graph.py (identical block) or the Guide wiring snippet.
+    # from solution/langgraph/graph.py (identical block) or the Guide wiring snippet.
     raise NotImplementedError("wire nodes and edges, then return g.compile()")
 
 
@@ -253,7 +253,7 @@ def assess_graph_ready(app) -> dict:
 
 
 def get_status() -> dict:
-    """Status for /student-loop: partial nodes/edges for the canvas; ready when fully wired."""
+    """Status for /lab-loop: partial nodes/edges for the canvas; ready when fully wired."""
     import inspect
 
     try:
@@ -345,7 +345,7 @@ def _finalize_payload(final: dict) -> dict:
     }
 
 
-def run_simple_loop(
+def run_lab_loop(
     *,
     dataset_path: str,
     target_column: str = "Survived",
@@ -370,7 +370,7 @@ def run_simple_loop(
     return _finalize_payload(final)
 
 
-def stream_simple_loop(
+def stream_lab_loop(
     *,
     dataset_path: str,
     target_column: str = "Survived",
@@ -454,5 +454,5 @@ def stream_simple_loop(
 
 if __name__ == "__main__":
     ds = REPO / "datasets" / "Titanic-Dataset.csv"
-    result = run_simple_loop(dataset_path=str(ds), target_column="Survived", max_cycles=3)
+    result = run_lab_loop(dataset_path=str(ds), target_column="Survived", max_cycles=3)
     print(json.dumps(result, indent=2, default=str))

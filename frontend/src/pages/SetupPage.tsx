@@ -42,7 +42,7 @@ export function SetupPage() {
 
   useEffect(() => {
     if (!projectId) {
-      navigate('/', { replace: true })
+      navigate('/advanced', { replace: true })
       return
     }
     void getProject(projectId)
@@ -166,7 +166,7 @@ export function SetupPage() {
       <AppNav />
       <main className="mx-auto flex min-h-[calc(100vh-5rem)] max-w-3xl flex-col justify-center px-6 py-12">
         <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-teal">
-          <Link to="/" className="hover:underline">
+          <Link to="/advanced" className="hover:underline">
             Projects
           </Link>
           {projectId ? (

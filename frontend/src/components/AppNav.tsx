@@ -1,10 +1,10 @@
 import { Link, useLocation } from 'react-router-dom'
 
 const LINKS = [
-  { to: '/', label: 'Projects' },
   { to: '/guide', label: 'Guide' },
-  { to: '/student-loop', label: 'Build Loop' },
-  { to: '/simple-loop', label: 'Simple Loop' },
+  { to: '/lab-loop', label: 'Lab Loop' },
+  { to: '/solution-loop', label: 'Solution Loop' },
+  { to: '/advanced', label: 'Advanced' },
 ]
 
 export function AppNav() {
@@ -15,8 +15,10 @@ export function AppNav() {
       <span className="text-line">|</span>
       {LINKS.map((l) => {
         const active =
-          l.to === '/'
-            ? loc.pathname === '/' || loc.pathname.startsWith('/projects')
+          l.to === '/advanced'
+            ? loc.pathname === '/advanced' ||
+              loc.pathname.startsWith('/projects') ||
+              loc.pathname.startsWith('/session')
             : loc.pathname === l.to
         return (
           <Link

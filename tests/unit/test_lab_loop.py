@@ -1,4 +1,4 @@
-"""Student LangGraph skeleton readiness + Airflow student DAG smoke checks."""
+"""Lab LangGraph skeleton readiness + Airflow student DAG smoke checks."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from pathlib import Path
 
 from langgraph.graph import END, START, StateGraph
 
-from student_loop.graph import (
+from lab.langgraph.graph import (
     REQUIRED_NODES,
     SimpleLoopState,
     assess_graph_ready,
@@ -82,9 +82,9 @@ def test_assess_ready_when_required_nodes_present() -> None:
 
 
 def test_student_airflow_dag_is_unwired_skeleton() -> None:
-    path = REPO / "airflow" / "dags" / "student_baseline_prep.py"
+    path = REPO / "lab" / "airflow" / "dags" / "lab_baseline_prep.py"
     text = path.read_text()
-    assert 'dag_id="student_baseline_prep"' in text
+    assert 'dag_id="lab_baseline_prep"' in text
     assert "# left = validate_customers()" in text
     assert "raise NotImplementedError" in text
     # Wiring must stay commented so Airflow Graph stays empty for students.

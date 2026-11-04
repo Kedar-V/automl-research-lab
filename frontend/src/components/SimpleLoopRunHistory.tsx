@@ -1,4 +1,4 @@
-import type { SimpleLoopRunRecord } from '../api/gateway'
+import type { LoopRunRecord } from '../api/gateway'
 
 function fmtScore(v: number | null | undefined): string {
   return typeof v === 'number' && Number.isFinite(v) ? v.toFixed(3) : '—'
@@ -11,12 +11,12 @@ function fmtWhen(iso: string | null | undefined): string {
 }
 
 type Props = {
-  runs: SimpleLoopRunRecord[]
+  runs: LoopRunRecord[]
   loading?: boolean
   selectedRunId?: string | null
   onRefresh?: () => void
   /** Load this run into the main lab panels (timeline, scores, meta). */
-  onOpenRun?: (run: SimpleLoopRunRecord) => void
+  onOpenRun?: (run: LoopRunRecord) => void
 }
 
 export function SimpleLoopRunHistory({

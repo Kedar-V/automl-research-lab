@@ -34,7 +34,7 @@ export function ProjectDetailPage() {
       <AppNav />
       <main className="mx-auto w-full max-w-4xl px-6 py-12">
         <p className="font-mono text-[11px] uppercase tracking-[0.22em] text-teal">
-          <Link to="/" className="hover:underline">
+          <Link to="/advanced" className="hover:underline">
             Projects
           </Link>
           {' / '}

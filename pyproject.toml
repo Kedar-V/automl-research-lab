@@ -26,4 +26,4 @@ include = ["contracts*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "advanced"]

@@ -1,7 +1,7 @@
-# Student copy guide — Build Loop
+# Student copy guide — Lab Loop
 
 Paste into [`graph.py`](graph.py) **one step at a time**.
-Filled reference: [`mini_loop/graph.py`](../mini_loop/graph.py).
+Filled reference: [`solution/langgraph/graph.py`](../solution/langgraph/graph.py).
 
 LLM / train helpers are already imported from [`loop_runtime.py`](../loop_runtime.py) — **do not paste Cursor/OpenRouter helper code** (instructor-maintained).
 
@@ -13,10 +13,10 @@ In-app copy buttons: `/guide` → LangGraph tab.
 After each step:
 
 ```bash
-python -m student_loop.run_cli --status
+python -m lab.langgraph.run_cli --status
 ```
 
-When `"ready": true`, open `/student-loop` → **Refresh graph** → **Run loop**.
+When `"ready": true`, open `/lab-loop` → **Refresh graph** → **Run loop**.
 
 ---
 
@@ -573,8 +573,8 @@ Inside `build_graph()`, after `g = StateGraph(SimpleLoopState)`, replace the TOD
 
 ## Done checklist
 
-1. `python -m student_loop.run_cli --status` → `"ready": true`
-2. UI `/student-loop` → **Refresh graph**
+1. `python -m lab.langgraph.run_cli --status` → `"ready": true`
+2. UI `/lab-loop` → **Refresh graph**
 3. Pick a CSV → select a model → **Run loop**
 
 Do not delete the status/scan/run helpers at the bottom of `graph.py` (gateway uses them).

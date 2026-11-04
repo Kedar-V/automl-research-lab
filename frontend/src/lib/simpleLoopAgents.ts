@@ -74,7 +74,7 @@ export function upsertExperiment(
   return next
 }
 
-/** Rebuild timeline experiments from a persisted simple-loop `result.steps` trail. */
+/** Rebuild timeline experiments from a persisted solution-loop `result.steps` trail. */
 export function experimentsFromRunSteps(
   steps: Record<string, unknown>[] | undefined,
 ): ExperimentEntry[] {

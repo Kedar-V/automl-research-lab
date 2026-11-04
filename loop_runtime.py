@@ -1,4 +1,4 @@
-"""Shared LLM + train helpers for mini_loop / student_loop (not a student exercise).
+"""Shared LLM + train helpers for solution/langgraph / lab/langgraph (not a student exercise).
 
 Cursor SDK + OpenRouter chat, JSON coerce, sklearn fit helpers, and heuristics.
 Imported by both graphs so the classroom guide only pastes node bodies + wiring.

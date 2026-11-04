@@ -205,7 +205,7 @@ export function ControlCenterPage() {
             Back to project
           </Link>
         ) : (
-          <Link to="/" className="text-teal hover:underline">
+          <Link to="/advanced" className="text-teal hover:underline">
             Projects
           </Link>
         )}
@@ -218,7 +218,7 @@ export function ControlCenterPage() {
             New session
           </Link>
         ) : (
-          <Link to="/" className="text-teal hover:underline">
+          <Link to="/advanced" className="text-teal hover:underline">
             New session
           </Link>
         )}

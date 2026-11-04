@@ -22,7 +22,7 @@ import pandas as pd
 from langgraph.graph import END, START, StateGraph
 
 ROOT = Path(__file__).resolve().parent
-REPO = ROOT.parent
+REPO = ROOT.parents[1]
 # Repo root locally; /app in the gateway container (loop_runtime.py is mounted there).
 for _p in (REPO, Path("/app")):
     if _p.exists() and str(_p) not in sys.path:
@@ -659,7 +659,7 @@ def _finalize_payload(final: dict) -> dict:
     }
 
 
-def run_simple_loop(
+def run_solution_loop(
     *,
     dataset_path: str,
     target_column: str = "Survived",
@@ -684,7 +684,7 @@ def run_simple_loop(
     return _finalize_payload(final)
 
 
-def stream_simple_loop(
+def stream_solution_loop(
     *,
     dataset_path: str,
     target_column: str = "Survived",
@@ -768,5 +768,5 @@ def stream_simple_loop(
 
 if __name__ == "__main__":
     ds = REPO / "datasets" / "Titanic-Dataset.csv"
-    result = run_simple_loop(dataset_path=str(ds), target_column="Survived", max_cycles=3)
+    result = run_solution_loop(dataset_path=str(ds), target_column="Survived", max_cycles=3)
     print(json.dumps(result, indent=2, default=str))

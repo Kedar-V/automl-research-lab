@@ -130,6 +130,23 @@ function LiveSimpleLoopGraphInner({
     setSelectedId(null)
   }, [visibleKey, visibleIds])
 
+  const refit = useCallback(() => {
+    // Two frames: first paints nodes, second measures bounds for fitView.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        // Lower minZoom so wide full graphs still fit; higher maxZoom so
+        // early progressive spines (2–3 nodes) can fill the viewport.
+        fitView({ padding: 0.16, duration: 220, minZoom: 0.2, maxZoom: 1.6 })
+      })
+    })
+  }, [fitView])
+
+  // Refit after progressive node sets change — initial fitView alone leaves sparse
+  // graphs parked at the canvas edge.
+  useEffect(() => {
+    refit()
+  }, [visibleKey, expanded, refit])
+
   useEffect(() => {
     if (!expanded) return
     const onKey = (e: KeyboardEvent) => {
@@ -178,11 +195,8 @@ function LiveSimpleLoopGraphInner({
   const resetLayout = useCallback(() => {
     setNodes(initialNodes(visibleIds))
     setSelectedId(null)
-    // Next frame so React Flow measures snapped nodes before fitting.
-    requestAnimationFrame(() => {
-      fitView({ padding: 0.18, duration: 200 })
-    })
-  }, [visibleIds, fitView])
+    refit()
+  }, [visibleIds, refit])
 
   const edges: Edge[] = useMemo(() => {
     const running = new Set(
@@ -243,7 +257,7 @@ function LiveSimpleLoopGraphInner({
         <div>
           <h2 className="font-display text-xl text-paper">Live agent graph</h2>
           <p className="text-xs text-mist">
-            Simple research loop · status from SSE only
+            Research loop · status from SSE only
             {activeNodeId ? ` · active: ${activeNodeId}` : ''}
           </p>
         </div>
@@ -272,15 +286,15 @@ function LiveSimpleLoopGraphInner({
           onNodesChange={onNodesChange}
           onNodeClick={onNodeClick}
           fitView
-          fitViewOptions={{ padding: 0.18 }}
+          fitViewOptions={{ padding: 0.16, minZoom: 0.2, maxZoom: 1.6 }}
           nodesDraggable
           nodesConnectable={false}
           elementsSelectable
           snapToGrid
           snapGrid={[20, 20]}
           proOptions={{ hideAttribution: true }}
-          minZoom={0.35}
-          maxZoom={1.4}
+          minZoom={0.2}
+          maxZoom={1.6}
           defaultEdgeOptions={{ type: 'step' }}
         >
           <Background gap={20} color="#c8d5ce" />

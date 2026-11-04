@@ -191,14 +191,14 @@ export async function uploadSessionDataset(
   )
 }
 
-export interface SimpleLoopDataset {
+export interface LoopDataset {
   filename: string
   path?: string
   columns: string[]
   bytes?: number
 }
 
-export interface SimpleLoopModel {
+export interface LoopModel {
   id: string
   name: string
   free: boolean
@@ -206,29 +206,29 @@ export interface SimpleLoopModel {
   available?: boolean
 }
 
-export async function listSimpleLoopModels(): Promise<{
+export async function listSolutionLoopModels(): Promise<{
   default: string
-  models: SimpleLoopModel[]
+  models: LoopModel[]
   key_configured: boolean
   cursor_configured?: boolean
 }> {
-  return json(await fetch(`${BASE}/simple-loop/models`))
+  return json(await fetch(`${BASE}/solution-loop/models`))
 }
 
-export async function listSimpleLoopDatasets(): Promise<SimpleLoopDataset[]> {
-  const body = await json<{ datasets: SimpleLoopDataset[] }>(
-    await fetch(`${BASE}/simple-loop/datasets`),
+export async function listSolutionLoopDatasets(): Promise<LoopDataset[]> {
+  const body = await json<{ datasets: LoopDataset[] }>(
+    await fetch(`${BASE}/solution-loop/datasets`),
   )
   return body.datasets ?? []
 }
 
-export async function uploadSimpleLoopDataset(file: File): Promise<SimpleLoopDataset> {
+export async function uploadSolutionLoopDataset(file: File): Promise<LoopDataset> {
   const form = new FormData()
   form.append('file', file)
-  return json(await fetch(`${BASE}/simple-loop/dataset`, { method: 'POST', body: form }))
+  return json(await fetch(`${BASE}/solution-loop/dataset`, { method: 'POST', body: form }))
 }
 
-export interface SimpleLoopRunResult {
+export interface LoopRunResult {
   cycles?: number
   best_val_f1?: number
   holdout_metrics?: { f1?: number; accuracy?: number; n_holdout?: number }
@@ -243,7 +243,7 @@ export interface SimpleLoopRunResult {
   target_column?: string
 }
 
-export interface SimpleLoopRunRecord {
+export interface LoopRunRecord {
   run_id: string
   created_at: string
   status: 'completed' | 'error' | string
@@ -259,21 +259,21 @@ export interface SimpleLoopRunRecord {
   verdict_action: string | null
   error: string | null
   /** Full finalize payload when the run finished successfully. */
-  result?: SimpleLoopRunResult | null
+  result?: LoopRunResult | null
 }
 
-export async function listSimpleLoopRuns(limit = 50): Promise<SimpleLoopRunRecord[]> {
-  const body = await json<{ runs: SimpleLoopRunRecord[] }>(
-    await fetch(`${BASE}/simple-loop/runs?limit=${limit}`),
+export async function listSolutionLoopRuns(limit = 50): Promise<LoopRunRecord[]> {
+  const body = await json<{ runs: LoopRunRecord[] }>(
+    await fetch(`${BASE}/solution-loop/runs?limit=${limit}`),
   )
   return body.runs ?? []
 }
 
-export async function getSimpleLoopRun(runId: string): Promise<SimpleLoopRunRecord> {
-  return json(await fetch(`${BASE}/simple-loop/runs/${encodeURIComponent(runId)}`))
+export async function getSolutionLoopRun(runId: string): Promise<LoopRunRecord> {
+  return json(await fetch(`${BASE}/solution-loop/runs/${encodeURIComponent(runId)}`))
 }
 
-export interface StudentLoopStatus {
+export interface LabLoopStatus {
   root: string
   available: boolean
   ready: boolean
@@ -284,8 +284,8 @@ export interface StudentLoopStatus {
   error: string | null
 }
 
-export async function getStudentLoopStatus(): Promise<StudentLoopStatus> {
-  return json(await fetch(`${BASE}/student-loop/status`))
+export async function getLabLoopStatus(): Promise<LabLoopStatus> {
+  return json(await fetch(`${BASE}/lab-loop/status`))
 }
 
 export async function pauseSession(sessionId: string) {

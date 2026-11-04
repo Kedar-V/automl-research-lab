@@ -68,22 +68,22 @@ services:
       BUNDLED_CSV: /bundled/churn_sample.csv
       DATASETS_DIR: /bundled
       PROJECT_DATA_DIR: /data/projects
-      SIMPLE_LOOP_RUNS_PATH: /data/simple_loop/runs.json
-      MINI_LOOP_ROOT: /mini_loop
-      STUDENT_LOOP_ROOT: /student_loop
+      LOOP_RUNS_PATH: /data/loop_runs/runs.json
+      SOLUTION_LOOP_ROOT: /packages/solution/langgraph
+      LAB_LOOP_ROOT: /packages/lab/langgraph
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-nvidia/nemotron-3.5-lightning:free}
       CURSOR_API_KEY: ${CURSOR_API_KEY:-}
     volumes:
       # rw so uploaded CSVs can be reused via the prior-datasets dropdown
       - ../datasets:/bundled
-      - ../mini_loop:/mini_loop
-      - ../student_loop:/student_loop
+      - ../lab:/packages/lab
+      - ../solution:/packages/solution
       # Shared LLM/train helpers imported by both graphs (not a student paste target)
       - ../loop_runtime.py:/app/loop_runtime.py
       - ../mocks/recordings:/app/mocks/recordings:ro
       - project_data:/data/projects
-      - simple_loop_data:/data/simple_loop
+      - loop_runs_data:/data/loop_runs
     depends_on:
       redis:
         condition: service_healthy
@@ -306,17 +306,21 @@ services:
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
       AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
       AIRFLOW__API__AUTH_BACKENDS: airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
+      # Classroom: reparse edited DAGs quickly (default 30s / 300s feels "not live")
+      AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "5"
+      AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "30"
       _AIRFLOW_DB_MIGRATE: "true"
       _AIRFLOW_WWW_USER_CREATE: "true"
       _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:-admin}
       _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
       PYTHONPATH: /repo
-      SIMPLE_LOOP_GATEWAY_URL: http://gateway:8000
+      SOLUTION_LOOP_GATEWAY_URL: http://gateway:8000
     volumes: &airflow-common-volumes
-      - ../airflow/dags:/opt/airflow/dags
+      - ../lab/airflow/dags:/opt/airflow/dags/lab
+      - ../solution/airflow/dags:/opt/airflow/dags/solution
       - ..:/repo
       - ../datasets:/repo/datasets
-      - ../mini_loop:/repo/mini_loop
+      - ../solution/langgraph:/repo/solution/langgraph
       - ../artifacts/airflow:/repo/artifacts/airflow
     user: "0:0"
     entrypoint: /bin/bash
@@ -381,7 +385,7 @@ services:
     volumes: *airflow-common-volumes
     user: "0:0"
     working_dir: /repo
-    entrypoint: ["python", "-m", "mini_loop.baseline"]
+    entrypoint: ["python", "-m", "solution.langgraph.baseline"]
     networks: [automl]
 
 networks:
@@ -393,5 +397,5 @@ volumes:
   dataset_data:
   harness_artifacts:
   project_data:
-  simple_loop_data:
+  loop_runs_data:
   airflow_db:

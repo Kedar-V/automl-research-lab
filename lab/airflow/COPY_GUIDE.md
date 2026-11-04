@@ -1,12 +1,11 @@
 # Student copy guide — Airflow baseline prep
 
-Paste into [`student_baseline_prep.py`](student_baseline_prep.py) **one task at a time**.  
-Filled reference (same code + comments): [`simple_loop_baseline_prep.py`](simple_loop_baseline_prep.py).
+Paste into [`lab_baseline_prep.py`](lab_baseline_prep.py) **one task at a time**.  
+Filled reference (same code + comments): [`../../solution/airflow/dags/solution_baseline_prep.py`](../../solution/airflow/dags/solution_baseline_prep.py).
 
-The skeleton already has path constants, `@dag` / `@task` comments, and each function’s docstring.  
-Paste **over the `raise NotImplementedError`** (keep the docstring above it).
+For each `@task`, keep the `@task` / `def` lines. Replace the stub **docstring + `raise NotImplementedError`** with the matching block (same as `/guide` → Airflow).
 
-In-app copy buttons: `/guide` → Airflow tab.
+In-app Copy buttons (Python-highlighted): `/guide` → Airflow tab.
 
 ---
 
@@ -24,7 +23,7 @@ In-app copy buttons: `/guide` → Airflow tab.
 # - catchup=False: do not backfill old dates when the DAG is unpaused
 # - tags: filters in the UI
 #
-# Calling student_baseline_prep() at the bottom REGISTERS this DAG
+# Calling lab_baseline_prep() at the bottom REGISTERS this DAG
 # with the scheduler. Without that call, Airflow never sees it.
 
 # @task turns a normal Python function into one node on the Graph.
@@ -40,9 +39,8 @@ In-app copy buttons: `/guide` → Airflow tab.
 
 ## Step 1 — `validate_customers`
 
-Docstring on stub: `"""Check the customers CSV exists and has the join key."""`
-
 ```python
+"""Check the customers CSV exists and has the join key."""
 if not CUSTOMERS.is_file():
     raise FileNotFoundError(CUSTOMERS)
 # nrows=0 → headers only (fast)
@@ -57,9 +55,8 @@ return {"path": str(CUSTOMERS)}
 
 ## Step 2 — `validate_transactions`
 
-Docstring: `"""Check the transactions CSV exists and has join key + target label."""`
-
 ```python
+"""Check the transactions CSV exists and has join key + target label."""
 if not TRANSACTIONS.is_file():
     raise FileNotFoundError(TRANSACTIONS)
 cols = list(pd.read_csv(TRANSACTIONS, nrows=0).columns)
@@ -73,9 +70,12 @@ return {"path": str(TRANSACTIONS)}
 
 ## Step 3 — `merge_csvs`
 
-Docstring already explains XCom + `**context`. Paste body:
-
 ```python
+"""Join transactions ⟕ customers. One output row per transaction.
+
+left_meta / right_meta come from upstream @task return values (XCom).
+**context is Airflow runtime info — we use ts_nodash as a unique run folder.
+"""
 run_id = context["ts_nodash"]  # e.g. 20261104T145012
 out = RUNS / run_id / "merged.csv"
 out.parent.mkdir(parents=True, exist_ok=True)
@@ -92,9 +92,8 @@ return {"merged_path": str(out), "n_merged": len(merged)}
 
 ## Step 4 — `make_subset`
 
-Docstring: `"""Downsample so baseline + the later simple-loop demo stay fast in class."""`
-
 ```python
+"""Downsample so baseline + the later lab/solution-loop demo stay fast in class."""
 run_id = context["ts_nodash"]
 out = RUNS / run_id / "subset.csv"
 df = pd.read_csv(merge_meta["merged_path"])
@@ -109,9 +108,8 @@ return {"merged_path": str(out), "n_subset": len(subset)}
 
 ## Step 5 — `profile_light`
 
-Docstring: `"""List columns that look leaky / id-like so training can drop them."""`
-
 ```python
+"""List columns that look leaky / id-like so training can drop them."""
 df = pd.read_csv(subset_meta["merged_path"])
 drops = [
     c
@@ -126,9 +124,8 @@ return {"recommended_drops": drops, "n_rows": len(df)}
 
 ## Step 6 — `train_baseline`
 
-Docstring: `"""Tiny numeric-only LogisticRegression — a classroom A-baseline, not production ML."""`
-
 ```python
+"""Tiny numeric-only LogisticRegression — a classroom A-baseline, not production ML."""
 df = pd.read_csv(subset_meta["merged_path"])
 drops = list(profile_meta.get("recommended_drops") or [])
 y = df[TARGET]
@@ -154,9 +151,8 @@ return {"f1": f1, "n_train": len(X_train), "n_val": len(X_val)}
 
 ## Step 7 — `publish_merged`
 
-Docstring: `"""Copy the subset to a stable path the simple-loop UI can pick up."""`
-
 ```python
+"""Copy the subset to a stable path the lab/solution-loop UI can pick up."""
 PUBLISH.parent.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(subset_meta["merged_path"], PUBLISH)
 return {
@@ -171,7 +167,7 @@ return {
 
 ## Step 8 — Wiring (fills the Graph tab)
 
-Replace the commented wiring block with this (same header comments as the reference):
+Delete the commented TODO wiring block and paste (never leave a bare `raise` here — Airflow executes this function at import):
 
 ```python
 # -----------------------------------------------------------------------
@@ -200,13 +196,13 @@ publish_merged(demo, base)
 
 ```bash
 docker compose -f infra/docker-compose.yml --env-file .env --profile airflow exec airflow-scheduler \
-  airflow dags unpause student_baseline_prep
+  airflow dags unpause lab_baseline_prep
 
 docker compose -f infra/docker-compose.yml --env-file .env --profile airflow exec airflow-scheduler \
-  airflow dags trigger student_baseline_prep
+  airflow dags trigger lab_baseline_prep
 
 docker compose -f infra/docker-compose.yml --env-file .env --profile airflow exec airflow-scheduler \
-  airflow dags list-runs -d student_baseline_prep --state success --limit 5
+  airflow dags list-runs -d lab_baseline_prep --state success --limit 5
 
 ls -la datasets/airflow/merged_latest.csv
 ls -la artifacts/airflow/runs/

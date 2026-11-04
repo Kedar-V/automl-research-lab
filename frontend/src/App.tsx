@@ -4,21 +4,22 @@ import { ControlCenterPage } from './pages/ControlCenterPage'
 import { ProjectDetailPage } from './pages/ProjectDetailPage'
 import { ProjectsPage } from './pages/ProjectsPage'
 import { SetupPage } from './pages/SetupPage'
-import { SimpleLoopPage } from './pages/SimpleLoopPage'
-import { StudentLoopPage } from './pages/StudentLoopPage'
+import { SolutionLoopPage } from './pages/SolutionLoopPage'
+import { LabLoopPage } from './pages/LabLoopPage'
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<ProjectsPage />} />
+        <Route path="/" element={<Navigate to="/guide" replace />} />
+        <Route path="/guide" element={<GuidePage />} />
+        <Route path="/lab-loop" element={<LabLoopPage />} />
+        <Route path="/solution-loop" element={<SolutionLoopPage />} />
+        <Route path="/advanced" element={<ProjectsPage />} />
         <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
         <Route path="/projects/:projectId/new" element={<SetupPage />} />
         <Route path="/session/:sessionId" element={<ControlCenterPage />} />
-        <Route path="/guide" element={<GuidePage />} />
-        <Route path="/student-loop" element={<StudentLoopPage />} />
-        <Route path="/simple-loop" element={<SimpleLoopPage />} />
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="*" element={<Navigate to="/guide" replace />} />
       </Routes>
     </BrowserRouter>
   )

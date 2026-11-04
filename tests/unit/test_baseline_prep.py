@@ -7,7 +7,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from mini_loop.baseline import make_subset, merge_csvs, profile_light, run_prep, train_baseline
+from solution.langgraph.baseline import make_subset, merge_csvs, profile_light, run_prep, train_baseline
 
 REPO = Path(__file__).resolve().parents[2]
 LEFT = REPO / "datasets" / "airflow" / "customers.csv"

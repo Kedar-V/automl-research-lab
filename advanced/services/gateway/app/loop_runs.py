@@ -1,4 +1,4 @@
-"""Persistent simple-loop run history (JSON on disk)."""
+"""Persistent lab/solution loop run history (JSON on disk)."""
 
 from __future__ import annotations
 
@@ -12,14 +12,15 @@ from typing import Any
 
 
 def _default_path() -> Path:
-    raw = os.getenv("SIMPLE_LOOP_RUNS_PATH", "").strip()
+    raw = os.getenv("LOOP_RUNS_PATH", "").strip() or os.getenv("SIMPLE_LOOP_RUNS_PATH", "").strip()
     if raw:
         return Path(raw)
     # Prefer /data when the Docker volume exists; else repo-local fallback.
-    docker = Path("/data/simple_loop/runs.json")
+    docker = Path("/data/loop_runs/runs.json")
     if Path("/data").exists():
         return docker
-    return Path(__file__).resolve().parents[3] / "data" / "simple_loop" / "runs.json"
+    # advanced/services/gateway/app -> parents[4] = repo root
+    return Path(__file__).resolve().parents[4] / "data" / "loop_runs" / "runs.json"
 
 
 MAX_RUNS = 50
@@ -29,7 +30,7 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class SimpleLoopRunStore:
+class LoopRunStore:
     def __init__(self, path: Path | None = None) -> None:
         self.path = path or _default_path()
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -82,17 +83,16 @@ class SimpleLoopRunStore:
             self._save()
         return entry
 
-    def list_runs(self, limit: int = MAX_RUNS) -> list[dict[str, Any]]:
-        n = max(1, min(int(limit), MAX_RUNS))
+    def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
         with self._lock:
-            return list(self._runs[:n])
+            return list(self._runs[: max(1, min(limit, MAX_RUNS))])
 
     def get(self, run_id: str) -> dict[str, Any] | None:
         with self._lock:
-            for r in self._runs:
-                if r.get("run_id") == run_id:
-                    return dict(r)
+            for row in self._runs:
+                if row.get("run_id") == run_id:
+                    return dict(row)
         return None
 
 
-simple_loop_run_store = SimpleLoopRunStore()
+loop_run_store = LoopRunStore()

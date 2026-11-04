@@ -1,8 +1,8 @@
 """Shared merge + baseline prep for Airflow DAGs and CLI (no Airflow import).
 
 Classroom order:
-  1) Run this prep (via Airflow DAG 1 or `python -m mini_loop.baseline`)
-  2) Run the simple research loop standalone on merged.csv
+  1) Run this prep (via Airflow DAG 1 or `python -m solution.langgraph.baseline`)
+  2) Run the solution research loop standalone on merged.csv
   3) Later: DAG 2 stubs the Airflow → loop trigger
 """
 
@@ -25,7 +25,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 DEFAULT_LEFT = REPO / "datasets" / "airflow" / "customers.csv"
 DEFAULT_RIGHT = REPO / "datasets" / "airflow" / "transactions.csv"
 DEFAULT_OUT = REPO / "artifacts" / "airflow" / "runs"
@@ -222,7 +222,7 @@ def train_baseline(
     holdout_frac: float = 0.2,
     experiment_id: str = "baseline-lr",
 ) -> dict[str, Any]:
-    """Train one baseline with the same split convention as mini_loop ml_engineer.
+    """Train one baseline with the same split convention as solution langgraph ml_engineer.
 
     Holdout is sealed first and never scored here.
     """

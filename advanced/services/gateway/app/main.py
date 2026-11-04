@@ -12,9 +12,20 @@ from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFi
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-ROOT = Path(__file__).resolve().parents[3]
+def _repo_root() -> Path:
+    here = Path(__file__).resolve().parent
+    for candidate in here.parents:
+        if (candidate / "contracts").is_dir():
+            return candidate
+    return here.parents[3]
+
+
+ROOT = _repo_root()
 sys.path.insert(0, str(ROOT))
-sys.path.insert(0, str(ROOT / "services"))
+_services = ROOT / "advanced" / "services"
+if not _services.is_dir():
+    _services = ROOT / "services"
+sys.path.insert(0, str(_services))
 
 from contracts import (  # noqa: E402
     CreateProjectRequest,
@@ -37,7 +48,7 @@ from services.gateway.app.live_sessions import live_store  # noqa: E402
 from services.gateway.app.project_store import project_store  # noqa: E402
 from services.gateway.app.replay import list_recordings, replay_store  # noqa: E402
 from services.gateway.app.redis_bus import bus, bus_status  # noqa: E402
-from services.gateway.app.simple_loop_runs import simple_loop_run_store  # noqa: E402
+from services.gateway.app.loop_runs import loop_run_store  # noqa: E402
 
 SERVICE_NAME = "gateway"
 # Env default for health; per-session mode comes from CreateSessionRequest.
@@ -645,15 +656,17 @@ async def upload_dataset(
     return JSONResponse(body)
 
 
-# --- Simple research loop (teaching LangGraph; isolated node scripts) ---
+# --- Solution / lab research loops (teaching LangGraph) ---
 
-MINI_LOOP_ROOT = Path(os.getenv("MINI_LOOP_ROOT", str(ROOT / "mini_loop")))
-if not MINI_LOOP_ROOT.exists():
-    MINI_LOOP_ROOT = Path("/mini_loop")
+SOLUTION_LOOP_ROOT = Path(
+    os.getenv("SOLUTION_LOOP_ROOT", str(ROOT / "solution" / "langgraph"))
+)
+if not SOLUTION_LOOP_ROOT.exists():
+    SOLUTION_LOOP_ROOT = Path("/packages/solution/langgraph")
 
-STUDENT_LOOP_ROOT = Path(os.getenv("STUDENT_LOOP_ROOT", str(ROOT / "student_loop")))
-if not STUDENT_LOOP_ROOT.exists():
-    STUDENT_LOOP_ROOT = Path("/student_loop")
+LAB_LOOP_ROOT = Path(os.getenv("LAB_LOOP_ROOT", str(ROOT / "lab" / "langgraph")))
+if not LAB_LOOP_ROOT.exists():
+    LAB_LOOP_ROOT = Path("/packages/lab/langgraph")
 
 
 DEFAULT_OPENROUTER_MODEL = os.getenv(
@@ -672,7 +685,7 @@ _FALLBACK_OPENROUTER_MODELS = [
 ]
 
 
-class SimpleLoopRequest(BaseModel):
+class LoopRequest(BaseModel):
     dataset_path: str | None = None
     target_column: str
     target_score: float = 0.8
@@ -694,7 +707,7 @@ def _fetch_openrouter_models() -> list[dict]:
     headers = {
         "Accept": "application/json",
         "HTTP-Referer": "https://localhost/automl-research-lab",
-        "X-Title": "Simple Research Loop",
+        "X-Title": "Research Loop",
     }
     if key:
         headers["Authorization"] = f"Bearer {key}"
@@ -728,12 +741,11 @@ def _fetch_openrouter_models() -> list[dict]:
     if not rows:
         return list(_FALLBACK_OPENROUTER_MODELS)
 
-    # Free models first, then the rest — keeps the classroom dropdown usable.
     rows.sort(key=lambda r: (not r["free"], r["id"].lower()))
     return rows
 
 
-def _simple_loop_dataset_dirs() -> list[Path]:
+def _loop_dataset_dirs() -> list[Path]:
     dirs: list[Path] = []
     for raw in (
         os.getenv("DATASETS_DIR"),
@@ -741,9 +753,7 @@ def _simple_loop_dataset_dirs() -> list[Path]:
         "/bundled/airflow",
         str(ROOT / "datasets"),
         str(ROOT / "datasets" / "airflow"),
-        str(MINI_LOOP_ROOT.parent / "datasets"),
-        str(MINI_LOOP_ROOT.parent / "datasets" / "airflow"),
-        "/tmp/simple_loop_uploads",
+        "/tmp/loop_uploads",
     ):
         if not raw:
             continue
@@ -772,8 +782,8 @@ def _sniff_csv_columns(path: Path, limit: int = 64) -> list[str]:
     return cols[:limit]
 
 
-def _resolve_simple_loop_dataset(explicit: str | None) -> str:
-    """Resolve an absolute path or a filename from the datasets catalog. No Titanic assumption."""
+def _resolve_loop_dataset(explicit: str | None) -> str:
+    """Resolve an absolute path or a filename from the datasets catalog."""
     if not explicit or not str(explicit).strip():
         raise HTTPException(
             status_code=400,
@@ -786,18 +796,90 @@ def _resolve_simple_loop_dataset(explicit: str | None) -> str:
     name = Path(raw).name
     if not name or name.startswith(".") or ".." in Path(raw).parts:
         raise HTTPException(status_code=400, detail="invalid dataset name")
-    for d in _simple_loop_dataset_dirs():
+    for d in _loop_dataset_dirs():
         cand = d / name
         if cand.is_file():
             return str(cand.resolve())
     raise HTTPException(status_code=400, detail=f"dataset not found: {name}")
 
 
-@app.get("/simple-loop/info")
-def simple_loop_info() -> dict:
+def _packages_root() -> Path:
+    """Parent of lab/ and solution/ packages (repo root locally, /packages in Docker)."""
+    for candidate in (SOLUTION_LOOP_ROOT.parent.parent, LAB_LOOP_ROOT.parent.parent, Path("/packages"), ROOT):
+        if (candidate / "solution" / "langgraph" / "graph.py").exists() or (
+            candidate / "lab" / "langgraph" / "graph.py"
+        ).exists():
+            return candidate
+    return ROOT
+
+
+def _import_loop_graph(module: str, root: Path, label: str):
+    if not (root / "graph.py").exists():
+        raise HTTPException(status_code=503, detail=f"{label} missing at {root}")
+    pkg_root = _packages_root()
+    if str(pkg_root) not in sys.path:
+        sys.path.insert(0, str(pkg_root))
+    for name in list(sys.modules):
+        if name in {"lab", "solution", "loop_runtime"} or name.startswith("lab.") or name.startswith(
+            "solution."
+        ):
+            del sys.modules[name]
+    try:
+        return importlib.import_module(module)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=503, detail=f"cannot import {module}: {exc}") from exc
+
+
+def _import_solution_loop():
+    return _import_loop_graph("solution.langgraph.graph", SOLUTION_LOOP_ROOT, "solution loop")
+
+
+def _import_lab_loop():
+    return _import_loop_graph("lab.langgraph.graph", LAB_LOOP_ROOT, "lab loop")
+
+
+def _loop_dataset_label(dataset_abs: str, requested: str | None) -> str:
+    if requested and str(requested).strip():
+        return Path(str(requested).strip()).name
+    return Path(dataset_abs).name
+
+
+def _record_loop_run(
+    *,
+    dataset_label: str,
+    target_column: str,
+    target_score: float,
+    max_cycles: int,
+    result: dict | None = None,
+    error: str | None = None,
+    model: str | None = None,
+) -> dict:
+    holdout = (result or {}).get("holdout_metrics") or {}
+    verdict = (result or {}).get("verdict") or {}
+    return loop_run_store.append(
+        {
+            "status": "error" if error else "completed",
+            "dataset": dataset_label,
+            "target_column": target_column,
+            "target_score": target_score,
+            "max_cycles": max_cycles,
+            "cycles": (result or {}).get("cycles"),
+            "best_val_f1": (result or {}).get("best_val_f1"),
+            "holdout_f1": holdout.get("f1") if isinstance(holdout, dict) else None,
+            "stop_reason": (result or {}).get("stop_reason"),
+            "model": (model or "").strip() or _default_openrouter_model(),
+            "verdict_action": verdict.get("action") if isinstance(verdict, dict) else None,
+            "error": error,
+            "result": result if isinstance(result, dict) else None,
+        }
+    )
+
+
+@app.get("/solution-loop/info")
+def solution_loop_info() -> dict:
     return {
-        "root": str(MINI_LOOP_ROOT),
-        "available": (MINI_LOOP_ROOT / "graph.py").exists(),
+        "root": str(SOLUTION_LOOP_ROOT),
+        "available": (SOLUTION_LOOP_ROOT / "graph.py").exists(),
         "accepts": "any CSV with a target column",
         "nodes": [
             "data_scientist",
@@ -816,18 +898,17 @@ def simple_loop_info() -> dict:
         },
         "datasets": [
             {"filename": p.name, "columns": _sniff_csv_columns(p)}
-            for d in _simple_loop_dataset_dirs()
+            for d in _loop_dataset_dirs()
             for p in sorted(d.glob("*.csv"))
         ],
     }
 
 
-@app.get("/simple-loop/models")
-def simple_loop_models() -> dict:
-    """Models for the simple-loop agent dropdown (Cursor SDK + OpenRouter)."""
+@app.get("/solution-loop/models")
+def solution_loop_models() -> dict:
+    """Models for the solution-loop agent dropdown (Cursor SDK + OpenRouter)."""
     cursor_ok = bool(os.getenv("CURSOR_API_KEY", "").strip())
     openrouter_ok = bool(os.getenv("OPENROUTER_API_KEY", "").strip())
-    # Prefer Cursor when configured — shared free OpenRouter models 429 often in class.
     default = "cursor/composer-2.5" if cursor_ok else _default_openrouter_model()
     cursor_models = [
         {
@@ -864,11 +945,11 @@ def simple_loop_models() -> dict:
     }
 
 
-@app.get("/simple-loop/datasets")
-def simple_loop_datasets() -> dict:
+@app.get("/solution-loop/datasets")
+def solution_loop_datasets() -> dict:
     seen: set[str] = set()
     items: list[dict] = []
-    for d in _simple_loop_dataset_dirs():
+    for d in _loop_dataset_dirs():
         for p in sorted(d.glob("*.csv")):
             if p.name in seen:
                 continue
@@ -884,22 +965,22 @@ def simple_loop_datasets() -> dict:
     return {"datasets": items}
 
 
-@app.post("/simple-loop/dataset")
-async def simple_loop_upload_dataset(file: UploadFile = File(...)) -> JSONResponse:
-    """Stage any CSV for the simple research loop (returns path + columns)."""
+@app.post("/solution-loop/dataset")
+async def solution_loop_upload_dataset(file: UploadFile = File(...)) -> JSONResponse:
+    """Stage any CSV for the research loop (returns path + columns)."""
     name = Path(file.filename or "upload.csv").name
     if not name.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="only .csv uploads are supported")
     if ".." in Path(name).parts:
         raise HTTPException(status_code=400, detail="invalid filename")
 
-    dest_dirs = _simple_loop_dataset_dirs()
+    dest_dirs = _loop_dataset_dirs()
     dest_root = next(
         (d for d in dest_dirs if d.exists() and os.access(d, os.W_OK)),
         None,
     )
     if dest_root is None:
-        dest_root = Path("/tmp/simple_loop_uploads")
+        dest_root = Path("/tmp/loop_uploads")
         dest_root.mkdir(parents=True, exist_ok=True)
 
     dest = dest_root / name
@@ -918,81 +999,28 @@ async def simple_loop_upload_dataset(file: UploadFile = File(...)) -> JSONRespon
     )
 
 
-def _import_simple_loop():
-    if not (MINI_LOOP_ROOT / "graph.py").exists():
-        raise HTTPException(status_code=503, detail=f"mini_loop missing at {MINI_LOOP_ROOT}")
-    pkg_root = MINI_LOOP_ROOT.parent
-    if str(pkg_root) not in sys.path:
-        sys.path.insert(0, str(pkg_root))
-    # Drop cached modules so host edits to mini_loop / loop_runtime show up without restart.
-    for name in list(sys.modules):
-        if name in {"mini_loop", "loop_runtime"} or name.startswith("mini_loop."):
-            del sys.modules[name]
-    try:
-        return importlib.import_module("mini_loop.graph")
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=503, detail=f"cannot import mini_loop.graph: {exc}") from exc
+@app.get("/solution-loop/runs")
+def solution_loop_list_runs(limit: int = Query(default=50, ge=1, le=50)) -> dict:
+    return {"runs": loop_run_store.list_runs(limit=limit)}
 
 
-def _simple_loop_dataset_label(dataset_abs: str, requested: str | None) -> str:
-    if requested and str(requested).strip():
-        return Path(str(requested).strip()).name
-    return Path(dataset_abs).name
-
-
-def _record_simple_loop_run(
-    *,
-    dataset_label: str,
-    target_column: str,
-    target_score: float,
-    max_cycles: int,
-    result: dict | None = None,
-    error: str | None = None,
-    model: str | None = None,
-) -> dict:
-    holdout = (result or {}).get("holdout_metrics") or {}
-    verdict = (result or {}).get("verdict") or {}
-    return simple_loop_run_store.append(
-        {
-            "status": "error" if error else "completed",
-            "dataset": dataset_label,
-            "target_column": target_column,
-            "target_score": target_score,
-            "max_cycles": max_cycles,
-            "cycles": (result or {}).get("cycles"),
-            "best_val_f1": (result or {}).get("best_val_f1"),
-            "holdout_f1": holdout.get("f1") if isinstance(holdout, dict) else None,
-            "stop_reason": (result or {}).get("stop_reason"),
-            "model": (model or "").strip() or _default_openrouter_model(),
-            "verdict_action": verdict.get("action") if isinstance(verdict, dict) else None,
-            "error": error,
-            "result": result if isinstance(result, dict) else None,
-        }
-    )
-
-
-@app.get("/simple-loop/runs")
-def simple_loop_list_runs(limit: int = Query(default=50, ge=1, le=50)) -> dict:
-    return {"runs": simple_loop_run_store.list_runs(limit=limit)}
-
-
-@app.get("/simple-loop/runs/{run_id}")
-def simple_loop_get_run(run_id: str) -> dict:
-    row = simple_loop_run_store.get(run_id)
+@app.get("/solution-loop/runs/{run_id}")
+def solution_loop_get_run(run_id: str) -> dict:
+    row = loop_run_store.get(run_id)
     if row is None:
         raise HTTPException(status_code=404, detail=f"run not found: {run_id}")
     return row
 
 
-@app.post("/simple-loop/run")
-async def simple_loop_run(body: SimpleLoopRequest) -> JSONResponse:
-    """Run the teaching LangGraph (each node = isolated Python script)."""
-    dataset = _resolve_simple_loop_dataset(body.dataset_path)
-    label = _simple_loop_dataset_label(dataset, body.dataset_path)
+@app.post("/solution-loop/run")
+async def solution_loop_run(body: LoopRequest) -> JSONResponse:
+    """Run the solution LangGraph reference implementation."""
+    dataset = _resolve_loop_dataset(body.dataset_path)
+    label = _loop_dataset_label(dataset, body.dataset_path)
     model = (body.model or "").strip() or _default_openrouter_model()
-    mini_graph = _import_simple_loop()
+    graph_mod = _import_solution_loop()
     try:
-        result = mini_graph.run_simple_loop(
+        result = graph_mod.run_solution_loop(
             dataset_path=dataset,
             target_column=body.target_column,
             target_score=body.target_score,
@@ -1001,7 +1029,7 @@ async def simple_loop_run(body: SimpleLoopRequest) -> JSONResponse:
             model=model,
         )
     except Exception as exc:  # noqa: BLE001
-        _record_simple_loop_run(
+        _record_loop_run(
             dataset_label=label,
             target_column=body.target_column,
             target_score=body.target_score,
@@ -1009,8 +1037,8 @@ async def simple_loop_run(body: SimpleLoopRequest) -> JSONResponse:
             error=str(exc),
             model=model,
         )
-        raise HTTPException(status_code=500, detail=f"simple-loop failed: {exc}") from exc
-    _record_simple_loop_run(
+        raise HTTPException(status_code=500, detail=f"solution-loop failed: {exc}") from exc
+    _record_loop_run(
         dataset_label=label,
         target_column=body.target_column,
         target_score=body.target_score,
@@ -1021,8 +1049,8 @@ async def simple_loop_run(body: SimpleLoopRequest) -> JSONResponse:
     return JSONResponse(result)
 
 
-@app.get("/simple-loop/stream")
-async def simple_loop_stream(
+@app.get("/solution-loop/stream")
+async def solution_loop_stream(
     target_column: str = Query(..., min_length=1),
     dataset_path: str = Query(..., min_length=1),
     target_score: float = Query(default=0.8),
@@ -1030,16 +1058,16 @@ async def simple_loop_stream(
     seed: int = Query(default=42),
     model: str | None = Query(default=None),
 ) -> StreamingResponse:
-    """SSE stream of LangGraph node events for the live simple-loop UI."""
-    dataset = _resolve_simple_loop_dataset(dataset_path)
-    label = _simple_loop_dataset_label(dataset, dataset_path)
+    """SSE stream of LangGraph node events for the solution-loop UI."""
+    dataset = _resolve_loop_dataset(dataset_path)
+    label = _loop_dataset_label(dataset, dataset_path)
     chosen_model = (model or "").strip() or _default_openrouter_model()
-    mini_graph = _import_simple_loop()
+    graph_mod = _import_solution_loop()
 
     def event_stream():
         saved = False
         try:
-            for ev in mini_graph.stream_simple_loop(
+            for ev in graph_mod.stream_solution_loop(
                 dataset_path=dataset,
                 target_column=target_column,
                 target_score=target_score,
@@ -1050,7 +1078,7 @@ async def simple_loop_stream(
                 etype = str(ev.get("type") or "message")
                 if etype == "run_completed" and not saved:
                     result = ev.get("result") if isinstance(ev, dict) else None
-                    _record_simple_loop_run(
+                    _record_loop_run(
                         dataset_label=label,
                         target_column=target_column,
                         target_score=target_score,
@@ -1060,7 +1088,7 @@ async def simple_loop_stream(
                     )
                     saved = True
                 if etype == "error" and not saved:
-                    _record_simple_loop_run(
+                    _record_loop_run(
                         dataset_label=label,
                         target_column=target_column,
                         target_score=target_score,
@@ -1073,7 +1101,7 @@ async def simple_loop_stream(
                 yield f"data: {json.dumps(ev, default=str)}\n\n"
         except Exception as exc:  # noqa: BLE001
             if not saved:
-                _record_simple_loop_run(
+                _record_loop_run(
                     dataset_label=label,
                     target_column=target_column,
                     target_score=target_score,
@@ -1096,33 +1124,15 @@ async def simple_loop_stream(
     )
 
 
-# --- Student research loop (classroom skeleton; empty until wired) ---
+# --- Lab research loop (classroom skeleton; empty until wired) ---
 
 
-def _import_student_loop():
-    if not (STUDENT_LOOP_ROOT / "graph.py").exists():
-        raise HTTPException(status_code=503, detail=f"student_loop missing at {STUDENT_LOOP_ROOT}")
-    pkg_root = STUDENT_LOOP_ROOT.parent
-    if str(pkg_root) not in sys.path:
-        sys.path.insert(0, str(pkg_root))
-    # Drop cached modules so host edits to student_loop / loop_runtime show up without restart.
-    for name in list(sys.modules):
-        if name in {"student_loop", "loop_runtime"} or name.startswith("student_loop."):
-            del sys.modules[name]
-    try:
-        return importlib.import_module("student_loop.graph")
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(
-            status_code=503, detail=f"cannot import student_loop.graph: {exc}"
-        ) from exc
-
-
-@app.get("/student-loop/status")
-def student_loop_status() -> dict:
-    """Readiness for the Build Loop UI (empty canvas until ready)."""
+@app.get("/lab-loop/status")
+def lab_loop_status() -> dict:
+    """Readiness for the Lab Loop UI (empty canvas until ready)."""
     base = {
-        "root": str(STUDENT_LOOP_ROOT),
-        "available": (STUDENT_LOOP_ROOT / "graph.py").exists(),
+        "root": str(LAB_LOOP_ROOT),
+        "available": (LAB_LOOP_ROOT / "graph.py").exists(),
     }
     if not base["available"]:
         return {
@@ -1130,15 +1140,15 @@ def student_loop_status() -> dict:
             "ready": False,
             "nodes": [],
             "missing_nodes": [],
-            "error": "student_loop/graph.py not found",
+            "error": "lab/langgraph/graph.py not found",
         }
-    student_graph = _import_student_loop()
-    status = student_graph.get_status()
+    lab_graph = _import_lab_loop()
+    status = lab_graph.get_status()
     return {**base, **status}
 
 
-@app.get("/student-loop/stream")
-async def student_loop_stream(
+@app.get("/lab-loop/stream")
+async def lab_loop_stream(
     target_column: str = Query(..., min_length=1),
     dataset_path: str = Query(..., min_length=1),
     target_score: float = Query(default=0.8),
@@ -1146,22 +1156,22 @@ async def student_loop_stream(
     seed: int = Query(default=42),
     model: str | None = Query(default=None),
 ) -> StreamingResponse:
-    """SSE stream for the student skeleton graph (same panels as simple-loop)."""
-    dataset = _resolve_simple_loop_dataset(dataset_path)
-    label = _simple_loop_dataset_label(dataset, dataset_path)
+    """SSE stream for the lab skeleton graph (same panels as solution-loop)."""
+    dataset = _resolve_loop_dataset(dataset_path)
+    label = _loop_dataset_label(dataset, dataset_path)
     chosen_model = (model or "").strip() or _default_openrouter_model()
-    student_graph = _import_student_loop()
-    status = student_graph.get_status()
+    lab_graph = _import_lab_loop()
+    status = lab_graph.get_status()
     if not status.get("ready"):
         raise HTTPException(
             status_code=400,
-            detail=status.get("error") or "student graph not ready — wire build_graph() first",
+            detail=status.get("error") or "lab graph not ready — wire build_graph() first",
         )
 
     def event_stream():
         saved = False
         try:
-            for ev in student_graph.stream_simple_loop(
+            for ev in lab_graph.stream_lab_loop(
                 dataset_path=dataset,
                 target_column=target_column,
                 target_score=target_score,
@@ -1172,8 +1182,8 @@ async def student_loop_stream(
                 etype = str(ev.get("type") or "message")
                 if etype == "run_completed" and not saved:
                     result = ev.get("result") if isinstance(ev, dict) else None
-                    _record_simple_loop_run(
-                        dataset_label=f"[student] {label}",
+                    _record_loop_run(
+                        dataset_label=f"[lab] {label}",
                         target_column=target_column,
                         target_score=target_score,
                         max_cycles=max_cycles,
@@ -1182,8 +1192,8 @@ async def student_loop_stream(
                     )
                     saved = True
                 if etype == "error" and not saved:
-                    _record_simple_loop_run(
-                        dataset_label=f"[student] {label}",
+                    _record_loop_run(
+                        dataset_label=f"[lab] {label}",
                         target_column=target_column,
                         target_score=target_score,
                         max_cycles=max_cycles,
@@ -1195,8 +1205,8 @@ async def student_loop_stream(
                 yield f"data: {json.dumps(ev, default=str)}\n\n"
         except Exception as exc:  # noqa: BLE001
             if not saved:
-                _record_simple_loop_run(
-                    dataset_label=f"[student] {label}",
+                _record_loop_run(
+                    dataset_label=f"[lab] {label}",
                     target_column=target_column,
                     target_score=target_score,
                     max_cycles=max_cycles,

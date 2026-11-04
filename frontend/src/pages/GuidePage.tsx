@@ -45,21 +45,23 @@ function AirflowTab() {
 
       <Step n={1} title="Open the skeleton">
         <p>
-          Open <Code>airflow/dags/student_baseline_prep.py</Code>. Until it is wired, the DAG parses
-          and the Graph tab is empty. Don&apos;t Trigger until the wiring is uncommented and the task
-          bodies are filled.
+          Edit <Code>lab/airflow/dags/lab_baseline_prep.py</Code>. Until it is wired, the DAG parses
+          and the Graph tab stays empty. Don&apos;t Trigger until task bodies are filled and wiring is
+          pasted. Filled reference: <Code>solution/airflow/dags/solution_baseline_prep.py</Code>.
+          Markdown copy steps: <Code>lab/airflow/COPY_GUIDE.md</Code>.
         </p>
         <p>
           Each DAG is one file: pandas/sklearn code lives inside the <Code>@task</Code> bodies (no
-          helper modules). Copy from <Code>airflow/dags/simple_loop_baseline_prep.py</Code>,{' '}
-          <Code>airflow/dags/COPY_GUIDE.md</Code>, or the snippets below.
+          helper modules). Constants like <Code>CUSTOMERS</Code> / <Code>TARGET</Code> are already at
+          the top of the lab file.
         </p>
       </Step>
 
       <Step n={2} title="Fill task bodies">
         <p>
-          Replace each <Code>NotImplementedError</Code> stub with the matching body (constants like{' '}
-          <Code>CUSTOMERS</Code> / <Code>TARGET</Code> are already at the top of the student file).
+          For each <Code>@task</Code>, replace the docstring +{' '}
+          <Code>raise NotImplementedError(...)</Code> with the matching snippet (keep the{' '}
+          <Code>@task</Code> / <Code>def</Code> lines). Use Copy → paste.
         </p>
         {TASK_SNIPPETS.map((s) => (
           <div key={s.id} className="space-y-1">
@@ -72,10 +74,15 @@ function AirflowTab() {
 
       <Step n={3} title="Wire the DAG">
         <p>
-          Uncomment the wiring block (identical to <Code>simple_loop_baseline_prep.py</Code>) or paste:
+          Delete the commented TODO wiring block and paste this after the last <Code>@task</Code>{' '}
+          (do <strong>not</strong> leave a bare <Code>raise</Code> here — Airflow runs this function at
+          import time):
         </p>
         <CopyBlock code={WIRING_SNIPPET} lang="python" />
-        <p>After you save, the Graph tab shows the full dependency graph.</p>
+        <p>
+          Calling a <Code>@task</Code> here builds Graph edges (it does not run Python yet). After you
+          save, the Graph tab shows the full dependency graph.
+        </p>
       </Step>
 
       <Step n={4} title="Run in Airflow">
@@ -88,7 +95,7 @@ function AirflowTab() {
         </p>
         <ol className="list-decimal space-y-3 pl-5">
           <li>
-            Unpause <Code>student_baseline_prep</Code>:
+            Unpause <Code>lab_baseline_prep</Code>:
             <div className="mt-2">
               <CopyBlock code={UNPAUSE_CMD} lang="bash" />
             </div>
@@ -123,18 +130,18 @@ function LangGraphTab() {
       <p>
         Assumes the web app is already up (<Code>make start-mac</Code> / <Code>make start-windows</Code>
         ). Open{' '}
-        <Link className="text-teal underline" to="/student-loop">
-          /student-loop
+        <Link className="text-teal underline" to="/lab-loop">
+          /lab-loop
         </Link>
         — the graph stays empty until <Code>build_graph()</Code> is wired.
       </p>
 
       <Step n={1} title="Open the skeleton">
         <p>
-          Edit <Code>student_loop/graph.py</Code>. LLM helpers are imported from{' '}
+          Edit <Code>lab/langgraph/graph.py</Code>. LLM helpers are imported from{' '}
           <Code>loop_runtime.py</Code> (already wired). Filled reference:{' '}
-          <Code>mini_loop/graph.py</Code> — same node shape, with working bodies. Markdown copy steps:{' '}
-          <Code>student_loop/COPY_GUIDE.md</Code>.
+          <Code>solution/langgraph/graph.py</Code> — same node shape, with working bodies. Markdown copy steps:{' '}
+          <Code>lab/langgraph/COPY_GUIDE.md</Code>.
         </p>
         <div>
           Optional readiness check:
@@ -177,8 +184,8 @@ function LangGraphTab() {
         <ol className="list-decimal space-y-1 pl-5">
           <li>
             On{' '}
-            <Link className="text-teal underline" to="/student-loop">
-              /student-loop
+            <Link className="text-teal underline" to="/lab-loop">
+              /lab-loop
             </Link>
             , click Refresh (or reload the page). The live graph should appear when status is ready.
           </li>

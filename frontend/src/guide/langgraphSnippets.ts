@@ -1,5 +1,5 @@
-// AUTO-GENERATED from mini_loop/graph.py — helpers live in loop_runtime.py (not shown to students).
-// Keep in sync with mini_loop/graph.py (filled) and student_loop/graph.py (skeleton).
+// AUTO-GENERATED from solution/langgraph/graph.py — helpers live in loop_runtime.py (not shown to students).
+// Keep in sync with solution/langgraph/graph.py (filled) and lab/langgraph/graph.py (skeleton).
 
 export interface Snippet {
   id: string
@@ -8,7 +8,7 @@ export interface Snippet {
   code: string
 }
 
-export const STATUS_CMD = 'python -m student_loop.run_cli --status'
+export const STATUS_CMD = 'python -m lab.langgraph.run_cli --status'
 
 export const NODE_SNIPPETS: Snippet[] = [
   {

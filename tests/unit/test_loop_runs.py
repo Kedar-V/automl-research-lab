@@ -1,15 +1,15 @@
-"""Unit tests for simple-loop run history store."""
+"""Unit tests for loop run history store."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from services.gateway.app.simple_loop_runs import MAX_RUNS, SimpleLoopRunStore
+from services.gateway.app.loop_runs import MAX_RUNS, LoopRunStore
 
 
 def test_append_list_get_and_cap(tmp_path: Path) -> None:
     path = tmp_path / "runs.json"
-    store = SimpleLoopRunStore(path=path)
+    store = LoopRunStore(path=path)
 
     first = store.append(
         {
@@ -34,13 +34,13 @@ def test_append_list_get_and_cap(tmp_path: Path) -> None:
     assert rows[0]["dataset"] == f"d{MAX_RUNS + 4}.csv"
 
     # Reload from disk
-    again = SimpleLoopRunStore(path=path)
+    again = LoopRunStore(path=path)
     assert len(again.list_runs()) == MAX_RUNS
     assert again.get(first["run_id"]) is None  # aged out of the cap
 
 
 def test_error_record(tmp_path: Path) -> None:
-    store = SimpleLoopRunStore(path=tmp_path / "runs.json")
+    store = LoopRunStore(path=tmp_path / "runs.json")
     row = store.append(
         {
             "dataset": "x.csv",

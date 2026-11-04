@@ -4,7 +4,7 @@ pydantic>=2.7,<3
 httpx>=0.27
 python-multipart>=0.0.9
 redis>=5.0
-# Simple research loop (mini_loop LangGraph teaching path)
+# Lab/solution research loops (LangGraph teaching path)
 pandas>=2.2
 scikit-learn>=1.4
 langgraph>=0.2
